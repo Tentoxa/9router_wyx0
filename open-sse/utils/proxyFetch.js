@@ -5,6 +5,54 @@ import { dbg } from "./debugLog.js";
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
 
+// ─── Connection Pool Configuration ─────────────────────────────────────────
+// Create a global undici Agent with connection pool limits to prevent socket exhaustion
+let globalDispatcher = null;
+
+async function getGlobalDispatcher() {
+  if (!globalDispatcher) {
+    const { Agent } = await import("undici");
+    globalDispatcher = new Agent({
+      // Connection pool limits - prevents socket exhaustion
+      connect: {
+        timeout: 60000, // 60s connection timeout
+      },
+      // Max concurrent connections per host
+      connections: 128,
+      // Keep-alive timeout - close idle connections after 30s
+      keepAliveTimeout: 30000,
+      // Max keep-alive timeout
+      keepAliveMaxTimeout: 60000,
+      // Enable pipelining for HTTP/1.1
+      pipelining: 1,
+    });
+    dbg("PROXY", `global dispatcher created with connection pool limits (max 128 connections, 30s keep-alive)`);
+  }
+  return globalDispatcher;
+}
+
+// Refresh global dispatcher periodically (every 10 minutes)
+let globalDispatcherAge = Date.now();
+const DISPATCHER_REFRESH_MS = 10 * 60 * 1000;
+
+async function getFreshGlobalDispatcher() {
+  const now = Date.now();
+  if (now - globalDispatcherAge > DISPATCHER_REFRESH_MS) {
+    // Close old dispatcher
+    if (globalDispatcher) {
+      try {
+        await globalDispatcher.close();
+        dbg("PROXY", `global dispatcher refreshed (closed after ${Math.round((now - globalDispatcherAge) / 1000)}s)`);
+      } catch (err) {
+        console.warn(`[ProxyFetch] error closing old global dispatcher: ${err.message}`);
+      }
+    }
+    globalDispatcher = null;
+    globalDispatcherAge = now;
+  }
+  return getGlobalDispatcher();
+}
+
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
 // Disabled: not in use. Kept commented for future re-enable.
 // Restore the original block to re-enable per-host JA3 spoofing.
@@ -460,14 +508,16 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
     }
   }
 
-  // got-scraping disabled — use native fetch directly
+  // got-scraping disabled — use native fetch with global dispatcher
   // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
   const fetchStart = Date.now();
   const requestBodySize = options?.body ? (typeof options.body === 'string' ? options.body.length : options.body.byteLength || options.body.length || '?') : 0;
   dbg("DIRECT", `fetch start | target=${targetUrl} | body=${requestBodySize}B | method=${options?.method || 'GET'}`);
 
   try {
-    const response = await originalFetch(url, options);
+    // Use global dispatcher with connection pool limits to prevent socket exhaustion
+    const dispatcher = await getFreshGlobalDispatcher();
+    const response = await originalFetch(url, { ...options, dispatcher });
     const fetchDuration = Date.now() - fetchStart;
     dbg("DIRECT", `fetch success | target=${targetUrl} | status=${response.status} | duration=${fetchDuration}ms`);
     return response;
