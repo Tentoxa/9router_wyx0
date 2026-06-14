@@ -29,6 +29,7 @@ export const MEMORY_CONFIG = {
   sessionCleanupIntervalMs: 30 * 60 * 1000,
   dnsCacheTtlMs: 5 * 60 * 1000,
   proxyDispatchersMaxSize: 20,
+  tlsSessionMaxAge: 30 * 60 * 1000, // 30 Minuten - TLS Session Cache TTL
 };
 
 // Stream stall timeout: abort if no chunk received within this duration

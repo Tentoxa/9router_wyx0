@@ -124,6 +124,16 @@ async function resolveRealIP(hostname) {
   const cached = DNS_CACHE.get(hostname);
   if (cached && Date.now() < cached.expiry) return cached.ip;
 
+  // Clean up expired entries periodically
+  if (DNS_CACHE.size > 100) {
+    const now = Date.now();
+    for (const [key, value] of DNS_CACHE.entries()) {
+      if (now >= value.expiry) {
+        DNS_CACHE.delete(key);
+      }
+    }
+  }
+
   try {
     const dns = await import("dns");
     const { promisify } = await import("util");
@@ -223,10 +233,26 @@ async function getDispatcher(proxyUrl) {
   if (!proxyDispatchers.has(normalized)) {
     // Evict oldest entry if max size reached
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
-      proxyDispatchers.delete(proxyDispatchers.keys().next().value);
+      const oldestKey = proxyDispatchers.keys().next().value;
+      const oldDispatcher = proxyDispatchers.get(oldestKey);
+      proxyDispatchers.delete(oldestKey);
+
+      // CRITICAL FIX: Close the dispatcher to release connections
+      try {
+        await oldDispatcher.close();
+        dbg("PROXY", `dispatcher evicted and closed | proxy=${oldestKey}`);
+      } catch (err) {
+        console.warn(`[ProxyFetch] failed to close evicted dispatcher: ${err.message}`);
+      }
     }
     const { ProxyAgent } = await import("undici");
-    proxyDispatchers.set(normalized, new ProxyAgent({ uri: normalized }));
+    const dispatcher = new ProxyAgent({
+      uri: normalized,
+      // Limit TLS session cache to prevent unbounded growth
+      maxCachedSessions: MEMORY_CONFIG.tlsSessionMaxAge ? 10 : 100,
+    });
+    proxyDispatchers.set(normalized, dispatcher);
+    dbg("PROXY", `dispatcher created | proxy=${normalized} | pool_size=${proxyDispatchers.size}`);
   }
 
   return proxyDispatchers.get(normalized);
@@ -244,6 +270,26 @@ async function createBypassRequest(parsedUrl, realIP, options) {
 
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let req = null;
+
+    // Socket cleanup helper
+    const cleanup = () => {
+      if (req) {
+        try {
+          req.destroy();
+        } catch (err) {
+          dbg("SOCKET", `failed to destroy request: ${err.message}`);
+        }
+        req = null;
+      }
+      if (socket && !socket.destroyed) {
+        try {
+          socket.destroy();
+        } catch (err) {
+          dbg("SOCKET", `failed to destroy socket: ${err.message}`);
+        }
+      }
+    };
 
     socket.connect(HTTPS_PORT, realIP, () => {
       const reqOptions = {
@@ -263,7 +309,7 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         },
       };
 
-      const req = https.request(reqOptions, (res) => {
+      req = https.request(reqOptions, (res) => {
         const response = {
           ok: res.statusCode >= HTTP_SUCCESS_MIN && res.statusCode < HTTP_SUCCESS_MAX,
           status: res.statusCode,
@@ -280,14 +326,35 @@ async function createBypassRequest(parsedUrl, realIP, options) {
         resolve(response);
       });
 
-      req.on("error", reject);
+      req.on("error", (err) => {
+        cleanup();
+        reject(err);
+      });
+
       if (options.body) {
         req.write(typeof options.body === "string" ? options.body : JSON.stringify(options.body));
       }
       req.end();
     });
 
-    socket.on("error", reject);
+    socket.on("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    // Timeout handling
+    if (options.signal?.aborted) {
+      cleanup();
+      reject(new Error("Request aborted"));
+      return;
+    }
+
+    if (options.signal) {
+      options.signal.addEventListener("abort", () => {
+        cleanup();
+        reject(new Error("Request aborted"));
+      }, { once: true });
+    }
   });
 }
 
@@ -438,5 +505,107 @@ async function patchedFetch(url, options = {}) {
 if (globalThis.fetch !== patchedFetch) {
   globalThis.fetch = patchedFetch;
 }
+
+// ─── Periodic Cleanup & Graceful Shutdown ──────────────────────────────────
+
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const DISPATCHER_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const dispatcherCreationTime = new Map();
+
+// Track dispatcher creation time
+const originalGetDispatcher = getDispatcher;
+getDispatcher = async function(proxyUrl) {
+  const normalized = normalizeProxyUrl(proxyUrl);
+  if (!dispatcherCreationTime.has(normalized)) {
+    dispatcherCreationTime.set(normalized, Date.now());
+  }
+  return originalGetDispatcher(proxyUrl);
+};
+
+// Periodic cleanup of expired DNS entries and old dispatchers
+let lastCleanupTime = Date.now();
+
+function periodicCleanup() {
+  const now = Date.now();
+
+  // Only run cleanup every 5 minutes
+  if (now - lastCleanupTime < CLEANUP_INTERVAL_MS) {
+    return;
+  }
+
+  lastCleanupTime = now;
+
+  // Clean expired DNS entries
+  const expiredDns = [];
+  for (const [hostname, entry] of DNS_CACHE.entries()) {
+    if (entry.expiry && now > entry.expiry) {
+      DNS_CACHE.delete(hostname);
+      expiredDns.push(hostname);
+    }
+  }
+
+  if (expiredDns.length > 0) {
+    dbg("CLEANUP", `removed ${expiredDns.length} expired DNS entries`);
+  }
+
+  // Clean old dispatchers (older than 30 minutes)
+  const oldDispatchers = [];
+  for (const [url, dispatcher] of proxyDispatchers.entries()) {
+    const creationTime = dispatcherCreationTime.get(url) || 0;
+    if (now - creationTime > DISPATCHER_MAX_AGE_MS) {
+      oldDispatchers.push({ url, dispatcher });
+    }
+  }
+
+  if (oldDispatchers.length > 0) {
+    oldDispatchers.forEach(({ url, dispatcher }) => {
+      proxyDispatchers.delete(url);
+      dispatcherCreationTime.delete(url);
+      dispatcher.close().catch(err => {
+        console.warn(`[ProxyFetch] error closing old dispatcher: ${err.message}`);
+      });
+    });
+    dbg("CLEANUP", `removed ${oldDispatchers.length} old dispatchers`);
+  }
+}
+
+// Run periodic cleanup
+setInterval(periodicCleanup, CLEANUP_INTERVAL_MS);
+
+// Graceful shutdown handler
+export async function closeAllDispatchers() {
+  const dispatchers = Array.from(proxyDispatchers.entries());
+  proxyDispatchers.clear();
+  DNS_CACHE.clear();
+  dispatcherCreationTime.clear();
+
+  await Promise.allSettled(
+    dispatchers.map(async ([url, dispatcher]) => {
+      try {
+        await dispatcher.close();
+        dbg("PROXY", `closed dispatcher | proxy=${url}`);
+      } catch (err) {
+        console.warn(`[ProxyFetch] error closing dispatcher: ${err.message}`);
+      }
+    })
+  );
+
+  dbg("PROXY", `closed ${dispatchers.length} dispatchers and cleared caches`);
+}
+
+let isShuttingDown = false;
+
+async function gracefulShutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  dbg("PROXY", "starting graceful shutdown");
+  await closeAllDispatchers();
+  dbg("PROXY", "graceful shutdown complete");
+}
+
+// Register shutdown handlers
+process.once('SIGTERM', gracefulShutdown);
+process.once('SIGINT', gracefulShutdown);
 
 export default patchedFetch;
