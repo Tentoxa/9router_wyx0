@@ -335,22 +335,96 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
   }
 
   if (proxyUrl) {
+    const dispatcherStart = Date.now();
+    let dispatcher;
     try {
-      const dispatcher = await getDispatcher(proxyUrl);
-      return await originalFetch(url, { ...options, dispatcher });
+      dispatcher = await getDispatcher(proxyUrl);
+      dbg("PROXY", `dispatcher created in ${Date.now() - dispatcherStart}ms | proxy=${proxyUrl} | target=${targetUrl}`);
+    } catch (dispatcherError) {
+      console.error(`[ProxyFetch] ❌ dispatcher creation failed after ${Date.now() - dispatcherStart}ms | proxy=${proxyUrl}`, {
+        error: dispatcherError.message,
+        stack: dispatcherError.stack?.split('\n').slice(0, 3).join(' | ')
+      });
+      if (proxyOptions?.strictProxy === true) {
+        throw new Error(`[ProxyFetch] Proxy dispatcher creation failed: ${dispatcherError.message}`);
+      }
+      console.warn(`[ProxyFetch] falling back to direct (no proxy)`);
+      return originalFetch(url, options);
+    }
+
+    const fetchStart = Date.now();
+    const requestBodySize = options?.body ? (typeof options.body === 'string' ? options.body.length : options.body.byteLength || options.body.length || '?') : 0;
+    dbg("PROXY", `fetch start | proxy=${proxyUrl} | target=${targetUrl} | body=${requestBodySize}B | method=${options?.method || 'GET'}`);
+
+    try {
+      const response = await originalFetch(url, { ...options, dispatcher });
+      const fetchDuration = Date.now() - fetchStart;
+      dbg("PROXY", `fetch success | proxy=${proxyUrl} | target=${targetUrl} | status=${response.status} | duration=${fetchDuration}ms | content-type=${response.headers?.get?.('content-type') || '?'}`);
+      return response;
     } catch (proxyError) {
+      const fetchDuration = Date.now() - fetchStart;
+      const isTimeout = proxyError.name === 'AbortError' && options?.signal?.aborted;
+      const errorType = isTimeout ? 'TIMEOUT' :
+                       proxyError.code === 'ECONNREFUSED' ? 'CONNECTION_REFUSED' :
+                       proxyError.code === 'ENOTFOUND' ? 'DNS_FAILED' :
+                       proxyError.code === 'ETIMEDOUT' ? 'TCP_TIMEOUT' :
+                       proxyError.code === 'ECONNRESET' ? 'CONNECTION_RESET' :
+                       'UNKNOWN';
+
+      console.error(`[ProxyFetch] ❌ fetch failed | type=${errorType} | proxy=${proxyUrl} | target=${targetUrl} | duration=${fetchDuration}ms`, {
+        errorName: proxyError.name,
+        errorMessage: proxyError.message,
+        errorCode: proxyError.code,
+        errno: proxyError.errno,
+        syscall: proxyError.syscall,
+        address: proxyError.address,
+        port: proxyError.port,
+        hostname: proxyError.hostname,
+        signalAborted: options?.signal?.aborted,
+        signalReason: options?.signal?.reason?.message
+      });
+
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
       }
-      console.warn(`[ProxyFetch] Proxy failed, falling back to direct: ${proxyError.message}`);
+      console.warn(`[ProxyFetch] falling back to direct (no proxy) after ${fetchDuration}ms`);
       return originalFetch(url, options);
     }
   }
 
   // got-scraping disabled — use native fetch directly
   // (Re-enable per-host by wrapping with tryGotScrapingFetch when needed)
-  return originalFetch(url, options);
+  const fetchStart = Date.now();
+  const requestBodySize = options?.body ? (typeof options.body === 'string' ? options.body.length : options.body.byteLength || options.body.length || '?') : 0;
+  dbg("DIRECT", `fetch start | target=${targetUrl} | body=${requestBodySize}B | method=${options?.method || 'GET'}`);
+
+  try {
+    const response = await originalFetch(url, options);
+    const fetchDuration = Date.now() - fetchStart;
+    dbg("DIRECT", `fetch success | target=${targetUrl} | status=${response.status} | duration=${fetchDuration}ms`);
+    return response;
+  } catch (directError) {
+    const fetchDuration = Date.now() - fetchStart;
+    const isTimeout = directError.name === 'AbortError' && options?.signal?.aborted;
+    const errorType = isTimeout ? 'TIMEOUT' :
+                     directError.code === 'ECONNREFUSED' ? 'CONNECTION_REFUSED' :
+                     directError.code === 'ENOTFOUND' ? 'DNS_FAILED' :
+                     directError.code === 'ETIMEDOUT' ? 'TCP_TIMEOUT' :
+                     directError.code === 'ECONNRESET' ? 'CONNECTION_RESET' :
+                     'UNKNOWN';
+
+    console.error(`[ProxyFetch] ❌ direct fetch failed | type=${errorType} | target=${targetUrl} | duration=${fetchDuration}ms`, {
+      errorName: directError.name,
+      errorMessage: directError.message,
+      errorCode: directError.code,
+      errno: directError.errno,
+      syscall: directError.syscall,
+      signalAborted: options?.signal?.aborted,
+      signalReason: options?.signal?.reason?.message
+    });
+    throw directError;
+  }
 }
 
 /**

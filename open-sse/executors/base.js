@@ -129,7 +129,10 @@ export class BaseExecutor {
       // Abort if upstream doesn't return response headers within connection timeout
       const connectCtrl = new AbortController();
       const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const connectTimer = setTimeout(() => {
+        console.warn(`[CONNECT_TIMEOUT] ⏱️ aborting after ${timeoutMs}ms | provider=${this.provider} | url=${url} | urlIndex=${urlIndex}/${fallbackCount}`);
+        connectCtrl.abort(new Error("fetch connect timeout"));
+      }, timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
@@ -137,18 +140,45 @@ export class BaseExecutor {
         const requestBodySize = typeof requestBody === "string"
           ? requestBody.length
           : requestBody?.byteLength ?? requestBody?.length ?? "?";
+
         const fetchT0 = Date.now();
+        const targetHost = new URL(url).hostname;
+        const proxyEnabled = proxyOptions?.enabled === true || proxyOptions?.connectionProxyEnabled === true;
+        const proxyUrl = proxyEnabled ? (proxyOptions?.url || proxyOptions?.connectionProxyUrl || 'env') : 'none';
+
+        console.log(`[FETCH] 🚀 start | provider=${this.provider.toUpperCase()} | model=${model || '?'} | url=${url}`, {
+          host: targetHost,
+          body: `${requestBodySize}B`,
+          connectTimeout: `${timeoutMs}ms`,
+          urlIndex: `${urlIndex}/${fallbackCount}`,
+          retryAttempt: retryAttemptsByUrl[urlIndex] || 0,
+          proxy: proxyEnabled ? proxyUrl : 'disabled',
+          signalAborted: signal?.aborted || false
+        });
+
         dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${requestBodySize}B | connectTimeout=${timeoutMs}ms`);
+
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
           body: requestBody,
           signal: mergedSignal
         }, proxyOptions);
+
         clearTimeout(connectTimer);
+        const ttft = Date.now() - fetchT0;
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
-        dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
+
+        console.log(`[FETCH] ✅ success | provider=${this.provider.toUpperCase()} | status=${response.status}`, {
+          ttft: `${ttft}ms`,
+          contentType: ct,
+          contentLength: cl,
+          host: targetHost,
+          urlIndex: `${urlIndex}/${fallbackCount}`
+        });
+
+        dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${ttft}ms | ct=${ct} | cl=${cl}`);
 
         if (await tryRetry(urlIndex, response.status, `status ${response.status}`)) { urlIndex--; continue; }
 
@@ -161,11 +191,48 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (error) {
         clearTimeout(connectTimer);
-        lastError = error;
+        const fetchDuration = Date.now() - fetchT0;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
+        const targetHost = new URL(url).hostname;
+
+        // Detailed error logging for connect timeouts
+        if (isConnectTimeout) {
+          console.error(`[CONNECT_TIMEOUT] ❌ timeout | provider=${this.provider.toUpperCase()} | duration=${fetchDuration}ms | timeout=${timeoutMs}ms`, {
+            url: url,
+            host: targetHost,
+            urlIndex: `${urlIndex}/${fallbackCount}`,
+            retryAttempt: retryAttemptsByUrl[urlIndex] || 0,
+            errorName: error.name,
+            errorMessage: error.message,
+            errorCode: error.code,
+            errno: error.errno,
+            syscall: error.syscall,
+            signalAborted: connectCtrl.signal.aborted,
+            parentSignalAborted: signal?.aborted || false
+          });
+        } else {
+          console.error(`[FETCH] ❌ error | provider=${this.provider.toUpperCase()} | duration=${fetchDuration}ms`, {
+            errorName: error.name,
+            errorMessage: error.message,
+            errorCode: error.code,
+            errno: error.errno,
+            syscall: error.syscall,
+            address: error.address,
+            port: error.port,
+            hostname: error.hostname,
+            url: url,
+            host: targetHost,
+            urlIndex: `${urlIndex}/${fallbackCount}`,
+            retryAttempt: retryAttemptsByUrl[urlIndex] || 0,
+            isConnectTimeout: isConnectTimeout
+          });
+        }
+
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
         if (error.name === "AbortError" && !isConnectTimeout) throw error;
+
+        lastError = error;
 
         // Map network/fetch exceptions to 502 retry config
         if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
