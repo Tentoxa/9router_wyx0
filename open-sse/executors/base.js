@@ -2,6 +2,7 @@ import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FET
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
+import { withConcurrencyLimit } from "../utils/requestQueue.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -101,6 +102,19 @@ export class BaseExecutor {
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
+    // Apply concurrency limiting for CodeBuddy to prevent server overload
+    // CodeBuddy server queues/drops requests when too many hit it simultaneously
+    const isCodeBuddy = this.provider?.toLowerCase().includes('codebuddy');
+    const maxConcurrent = isCodeBuddy ? 10 : null;
+
+    if (maxConcurrent) {
+      return withConcurrencyLimit(this.provider, () => this._executeInternal({ model, body, stream, credentials, signal, log, proxyOptions }), maxConcurrent);
+    }
+
+    return this._executeInternal({ model, body, stream, credentials, signal, log, proxyOptions });
+  }
+
+  async _executeInternal({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
