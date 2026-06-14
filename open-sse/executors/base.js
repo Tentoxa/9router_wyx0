@@ -135,16 +135,22 @@ export class BaseExecutor {
       }, timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
+      // Define fetchT0 and targetHost outside try block so they're available in catch
+      const fetchT0 = Date.now();
+      let targetHost;
+      try {
+        targetHost = new URL(url).hostname;
+      } catch {
+        targetHost = 'unknown';
+      }
+      const proxyEnabled = proxyOptions?.enabled === true || proxyOptions?.connectionProxyEnabled === true;
+      const proxyUrl = proxyEnabled ? (proxyOptions?.url || proxyOptions?.connectionProxyUrl || 'env') : 'none';
+
       try {
         const requestBody = this.prepareRequestBody(transformedBody, headers);
         const requestBodySize = typeof requestBody === "string"
           ? requestBody.length
           : requestBody?.byteLength ?? requestBody?.length ?? "?";
-
-        const fetchT0 = Date.now();
-        const targetHost = new URL(url).hostname;
-        const proxyEnabled = proxyOptions?.enabled === true || proxyOptions?.connectionProxyEnabled === true;
-        const proxyUrl = proxyEnabled ? (proxyOptions?.url || proxyOptions?.connectionProxyUrl || 'env') : 'none';
 
         console.log(`[FETCH] 🚀 start | provider=${this.provider.toUpperCase()} | model=${model || '?'} | url=${url}`, {
           host: targetHost,
@@ -193,7 +199,6 @@ export class BaseExecutor {
         clearTimeout(connectTimer);
         const fetchDuration = Date.now() - fetchT0;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
-        const targetHost = new URL(url).hostname;
 
         // Detailed error logging for connect timeouts
         if (isConnectTimeout) {
