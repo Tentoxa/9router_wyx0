@@ -5,6 +5,12 @@ import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
 import { saveRequestDetail } from "@/lib/usageDb.js";
+import {
+  needsHeartbeat,
+  getCodeBuddySSEHeaders,
+  createHeartbeatInjector,
+  getStallTimeout
+} from "./codebuddyHeartbeat.js";
 
 const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
@@ -48,7 +54,23 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
   // Responses passthrough: synthesize response.failed + [DONE] if the stream aborts/stalls before a terminal event
   const isResponsesPassthrough = sourceFormat === FORMATS.OPENAI_RESPONSES && targetFormat === FORMATS.OPENAI_RESPONSES;
   const onAbortTerminal = isResponsesPassthrough ? buildAbortedResponsesTerminalBytes : null;
-  const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal);
+
+  // Provider-specific stall timeout (CodeBuddy needs 20min for extended reasoning)
+  const stallTimeout = getStallTimeout(provider);
+  if (provider === "codebuddy") {
+    console.log(`[STREAM] 🧠 CodeBuddy extended reasoning mode: ${stallTimeout / 1000}s stall timeout + 30s heartbeat`);
+  }
+
+  let transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+
+  // Inject heartbeat for providers with extended reasoning (CodeBuddy)
+  if (needsHeartbeat(provider)) {
+    const heartbeatInjector = createHeartbeatInjector();
+    transformedBody = transformedBody.pipeThrough(heartbeatInjector);
+  }
+
+  // Select headers: CodeBuddy gets enhanced headers for proxy compatibility
+  const responseHeaders = needsHeartbeat(provider) ? getCodeBuddySSEHeaders() : SSE_HEADERS;
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
@@ -65,7 +87,7 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
 
   return {
     success: true,
-    response: new Response(transformedBody, { headers: SSE_HEADERS })
+    response: new Response(transformedBody, { headers: responseHeaders })
   };
 }
 

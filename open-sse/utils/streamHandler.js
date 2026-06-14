@@ -30,6 +30,8 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   return {
     signal: abortController.signal,
     startTime,
+    provider,
+    model,
 
     isConnected: () => !disconnected,
 
@@ -178,13 +180,18 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * "failed to pipe response" error in Next.
  *
  * Any upstream chunk resets the timer. If no bytes arrive for
- * STREAM_STALL_TIMEOUT_MS, abort the underlying fetch via the controller.
+ * STREAM_STALL_TIMEOUT_MS (or custom timeoutMs), abort the underlying fetch via the controller.
  *
  * @param {Response} providerResponse - Response from provider
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
+ * @param {Function} onAbortTerminal - Optional callback for abort terminal bytes
+ * @param {number} timeoutMs - Optional custom stall timeout (overrides STREAM_STALL_TIMEOUT_MS)
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, timeoutMs = null) {
+  // Use custom timeout if provided, otherwise fall back to global config
+  const effectiveTimeout = timeoutMs || STREAM_STALL_TIMEOUT_MS;
+
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -198,10 +205,26 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
     clearStall();
     stallTimer = setTimeout(() => {
       stallTimer = null;
-      dbg(tag, `STALL TIMEOUT ${STREAM_STALL_TIMEOUT_MS}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${Date.now() - lastChunkAt}ms`);
+
+      // Calculate diagnostic stats
+      const timeSinceStart = Date.now() - t0;
+      const timeSinceLastChunk = Date.now() - lastChunkAt;
+      const avgChunkSize = chunkCount > 0 ? Math.round(totalBytes / chunkCount) : 0;
+      const avgChunksPerSecond = timeSinceStart > 0 ? (chunkCount / (timeSinceStart / 1000)).toFixed(2) : 0;
+
+      // Enhanced stall timeout logging
+      const p = streamController.provider?.toUpperCase() || "UNKNOWN";
+      const m = streamController.model || "unknown";
+
+      console.error(`[${getTimeString()}] ⏱️  [STALL] ${p} | ${m} | ${effectiveTimeout}ms timeout`);
+      console.error(`         Chunks: ${chunkCount} | Total: ${totalBytes}B | Avg: ${avgChunkSize}B/chunk`);
+      console.error(`         Rate: ${avgChunksPerSecond} chunks/sec | Last chunk: ${timeSinceLastChunk}ms ago`);
+      console.error(`         Duration: ${timeSinceStart}ms | Diagnosis: ${chunkCount === 0 ? 'NO DATA RECEIVED - connection issue?' : 'Stream stalled - extended reasoning or server hang?'}`);
+
+      dbg(tag, `STALL TIMEOUT ${effectiveTimeout}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${timeSinceLastChunk}ms`);
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
-    }, STREAM_STALL_TIMEOUT_MS);
+    }, effectiveTimeout);
   };
 
   // Wrap controller so every termination path clears the stall timer.
@@ -222,19 +245,58 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
 
   const upstreamTap = new TransformStream({
     transform(chunk, controller) {
-      chunkCount++;
-      const sz = chunk?.byteLength || chunk?.length || 0;
-      totalBytes += sz;
       const now = Date.now();
-      const gap = now - lastChunkAt;
+      const sz = chunk?.byteLength || chunk?.length || 0;
+      const timeSinceStart = now - t0;
+      const timeSinceLastChunk = now - lastChunkAt;
+
+      chunkCount++;
+      totalBytes += sz;
       lastChunkAt = now;
-      if (isDebugEnabled && (chunkCount <= 5 || chunkCount % 20 === 0 || gap > 5000)) {
-        dbg(tag, `chunk #${chunkCount} | size=${sz}B | gap=${gap}ms | total=${totalBytes}B`);
+
+      // Log first chunk to see initial latency
+      if (chunkCount === 1) {
+        const p = streamController.provider?.toUpperCase() || "UNKNOWN";
+        const m = streamController.model || "unknown";
+        console.log(`[${getTimeString()}] ▶️  [STREAM] ${p} | ${m} | First chunk received after ${timeSinceStart}ms (${sz}B)`);
+        dbg(tag, `FIRST CHUNK | latency=${timeSinceStart}ms | size=${sz}B`);
+      }
+
+      // Log significant gaps (>10 seconds) - indicates potential thinking/reasoning
+      if (timeSinceLastChunk > 10000 && chunkCount > 1) {
+        const p = streamController.provider?.toUpperCase() || "UNKNOWN";
+        const m = streamController.model || "unknown";
+        console.warn(`[${getTimeString()}] ⚠️  [STREAM] ${p} | ${m} | Large gap: ${timeSinceLastChunk}ms since last chunk (chunk #${chunkCount}, ${sz}B)`);
+        dbg(tag, `LARGE GAP | ${timeSinceLastChunk}ms since chunk #${chunkCount-1} | now receiving chunk #${chunkCount} (${sz}B)`);
+      }
+
+      // Periodic progress updates every 50 chunks or every 30 seconds
+      if (chunkCount % 50 === 0 || (timeSinceStart > 0 && timeSinceStart % 30000 < 500)) {
+        const avgChunkSize = chunkCount > 0 ? Math.round(totalBytes / chunkCount) : 0;
+        const chunksPerSec = timeSinceStart > 0 ? (chunkCount / (timeSinceStart / 1000)).toFixed(1) : "0.0";
+        const bytesPerSec = timeSinceStart > 0 ? Math.round(totalBytes / (timeSinceStart / 1000)) : 0;
+        const p = streamController.provider?.toUpperCase() || "UNKNOWN";
+        const m = streamController.model || "unknown";
+        console.log(`[${getTimeString()}] 📊 [STREAM] ${p} | ${m} | Progress: ${chunkCount} chunks, ${totalBytes}B total, ${chunksPerSec} chunks/sec, ${bytesPerSec}B/sec, ${avgChunkSize}B avg chunk`);
+      }
+
+      if (isDebugEnabled && (chunkCount <= 5 || chunkCount % 20 === 0 || timeSinceLastChunk > 5000)) {
+        dbg(tag, `chunk #${chunkCount} | size=${sz}B | gap=${timeSinceLastChunk}ms | total=${totalBytes}B | rate=${timeSinceStart > 0 ? (chunkCount / (timeSinceStart / 1000)).toFixed(1) : "0.0"} chunks/sec`);
       }
       armStall();
       controller.enqueue(chunk);
     },
-    flush() { dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${Date.now() - t0}ms`); clearStall(); }
+    flush() {
+      const p = streamController.provider?.toUpperCase() || "UNKNOWN";
+      const m = streamController.model || "unknown";
+      const duration = Date.now() - t0;
+      const avgChunkSize = chunkCount > 0 ? Math.round(totalBytes / chunkCount) : 0;
+      const chunksPerSec = duration > 0 ? (chunkCount / (duration / 1000)).toFixed(1) : "0.0";
+      const bytesPerSec = duration > 0 ? Math.round(totalBytes / (duration / 1000)) : 0;
+      console.log(`[${getTimeString()}] ✅ [STREAM] ${p} | ${m} | Completed: ${chunkCount} chunks, ${totalBytes}B total in ${duration}ms (${chunksPerSec} chunks/sec, ${bytesPerSec}B/sec, ${avgChunkSize}B avg chunk)`);
+      dbg(tag, `upstream EOF | chunks=${chunkCount} | bytes=${totalBytes} | dur=${duration}ms | avg=${avgChunkSize}B/chunk`);
+      clearStall();
+    }
   });
 
   const transformedBody = providerResponse.body
