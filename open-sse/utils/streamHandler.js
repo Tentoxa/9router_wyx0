@@ -180,13 +180,18 @@ export function createDisconnectAwareStream(transformStream, streamController, o
  * "failed to pipe response" error in Next.
  *
  * Any upstream chunk resets the timer. If no bytes arrive for
- * STREAM_STALL_TIMEOUT_MS, abort the underlying fetch via the controller.
+ * STREAM_STALL_TIMEOUT_MS (or custom timeoutMs), abort the underlying fetch via the controller.
  *
  * @param {Response} providerResponse - Response from provider
  * @param {TransformStream} transformStream - Transform stream for SSE
  * @param {object} streamController - Stream controller from createStreamController
+ * @param {Function} onAbortTerminal - Optional callback for abort terminal bytes
+ * @param {number} timeoutMs - Optional custom stall timeout (overrides STREAM_STALL_TIMEOUT_MS)
  */
-export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null) {
+export function pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal = null, timeoutMs = null) {
+  // Use custom timeout if provided, otherwise fall back to global config
+  const effectiveTimeout = timeoutMs || STREAM_STALL_TIMEOUT_MS;
+
   let stallTimer = null;
   let chunkCount = 0;
   let totalBytes = 0;
@@ -211,15 +216,15 @@ export function pipeWithDisconnect(providerResponse, transformStream, streamCont
       const p = streamController.provider?.toUpperCase() || "UNKNOWN";
       const m = streamController.model || "unknown";
 
-      console.error(`[${getTimeString()}] ⏱️  [STALL] ${p} | ${m} | ${STREAM_STALL_TIMEOUT_MS}ms timeout`);
+      console.error(`[${getTimeString()}] ⏱️  [STALL] ${p} | ${m} | ${effectiveTimeout}ms timeout`);
       console.error(`         Chunks: ${chunkCount} | Total: ${totalBytes}B | Avg: ${avgChunkSize}B/chunk`);
       console.error(`         Rate: ${avgChunksPerSecond} chunks/sec | Last chunk: ${timeSinceLastChunk}ms ago`);
       console.error(`         Duration: ${timeSinceStart}ms | Diagnosis: ${chunkCount === 0 ? 'NO DATA RECEIVED - connection issue?' : 'Stream stalled - extended reasoning or server hang?'}`);
 
-      dbg(tag, `STALL TIMEOUT ${STREAM_STALL_TIMEOUT_MS}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${timeSinceLastChunk}ms`);
+      dbg(tag, `STALL TIMEOUT ${effectiveTimeout}ms | chunks=${chunkCount} | bytes=${totalBytes} | sinceLast=${timeSinceLastChunk}ms`);
       streamController.handleError?.(new Error("stream stall timeout"));
       streamController.abort?.();
-    }, STREAM_STALL_TIMEOUT_MS);
+    }, effectiveTimeout);
   };
 
   // Wrap controller so every termination path clears the stall timer.
