@@ -19,21 +19,22 @@ async function getGlobalDispatcher() {
       },
       // Max concurrent connections per host
       connections: 128,
-      // Keep-alive timeout - close idle connections after 30s
-      keepAliveTimeout: 30000,
-      // Max keep-alive timeout
-      keepAliveMaxTimeout: 60000,
-      // Enable pipelining for HTTP/1.1
-      pipelining: 1,
+      // CRITICAL: Disable keep-alive for CodeBuddy to prevent connection corruption
+      // CodeBuddy server has issues with connection reuse - each request needs fresh connection
+      keepAliveTimeout: 0, // Disable keep-alive
+      keepAliveMaxTimeout: 0,
+      // Disable pipelining (not needed with keep-alive disabled)
+      pipelining: 0,
     });
-    dbg("PROXY", `global dispatcher created with connection pool limits (max 128 connections, 30s keep-alive)`);
+    dbg("PROXY", `global dispatcher created with keep-alive DISABLED (fresh connection per request)`);
   }
   return globalDispatcher;
 }
 
-// Refresh global dispatcher periodically (every 10 minutes)
+// Refresh global dispatcher frequently to prevent connection state corruption
+// CodeBuddy connections become "dirty" quickly - need fresh connections
 let globalDispatcherAge = Date.now();
-const DISPATCHER_REFRESH_MS = 10 * 60 * 1000;
+const DISPATCHER_REFRESH_MS = 30 * 1000; // 30 seconds - very aggressive refresh
 
 async function getFreshGlobalDispatcher() {
   const now = Date.now();
