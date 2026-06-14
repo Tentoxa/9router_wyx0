@@ -72,12 +72,11 @@ export function createHeartbeatInjector() {
           controller.enqueue(heartbeatBytes);
 
           heartbeatCount++;
+          const timeSinceLast = now - lastHeartbeatAt;
           lastHeartbeatAt = now;
 
-          // Log first heartbeat and every 10th heartbeat
-          if (heartbeatCount === 1 || heartbeatCount % 10 === 0) {
-            console.log(`[HEARTBEAT] 💓 Sent ${heartbeatCount} heartbeats (${Math.round((now - lastHeartbeatAt) / 1000)}s since last)`);
-          }
+          // Log every heartbeat for visibility
+          console.log(`[HEARTBEAT] 💓 #${heartbeatCount} (${Math.round(timeSinceLast / 1000)}s since last)`);
         } catch (err) {
           console.error("[HEARTBEAT] Failed to inject heartbeat:", err.message);
           clearInterval(heartbeatTimer);
