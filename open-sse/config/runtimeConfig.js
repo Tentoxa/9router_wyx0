@@ -32,7 +32,9 @@ export const MEMORY_CONFIG = {
 };
 
 // Stream stall timeout: abort if no chunk received within this duration
-export const STREAM_STALL_TIMEOUT_MS = 60 * 1000;
+// Increased to 180s to support extended reasoning models (e.g., Claude Opus 4.7 with 1M context)
+// that have long "thinking" phases without stream output
+export const STREAM_STALL_TIMEOUT_MS = 180 * 1000;
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = 60 * 1000;
