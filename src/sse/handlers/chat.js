@@ -240,6 +240,17 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
+
+        // CodeBuddy: Apply cooldown after success to prevent immediate re-selection
+        // CodeBuddy rate-limits accounts immediately after first request
+        if (provider === "codebuddy") {
+          const cooldownMs = 5000; // 5 seconds cooldown
+          const cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
+          await updateProviderCredentials(credentials.connectionId, {
+            [`modelLock_${model}`]: cooldownUntil
+          });
+          log.debug("AUTH", `${credentials.connectionName} cooldown ${cooldownMs/1000}s after success`);
+        }
       }
     });
 
