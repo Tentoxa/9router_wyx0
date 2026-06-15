@@ -16,6 +16,10 @@ async function getGlobalDispatcher() {
       // Connection pool limits - prevents socket exhaustion
       connect: {
         timeout: 60000, // 60s connection timeout
+        // TCP-level optimizations (matches CodeBuddy CLI)
+        keepAlive: true,
+        keepAliveInitialDelay: 60000, // 60s TCP keepalive (OS-level)
+        noDelay: true, // Disable Nagle's algorithm for immediate data transmission
       },
       // Max concurrent connections per host
       connections: 128,
@@ -396,6 +400,10 @@ async function createBypassRequest(parsedUrl, realIP, options) {
     };
 
     socket.connect(HTTPS_PORT, realIP, () => {
+      // TCP-level optimizations (matches CodeBuddy CLI)
+      socket.setKeepAlive(true, 60000); // 60s TCP keepalive (OS-level)
+      socket.setNoDelay(true); // Disable Nagle's algorithm for immediate data transmission
+
       const reqOptions = {
         socket,
         // SNI + cert hostname are validated against the hostname the caller
