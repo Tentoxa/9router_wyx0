@@ -9,7 +9,9 @@ import {
   needsHeartbeat,
   getCodeBuddySSEHeaders,
   createHeartbeatInjector,
-  getStallTimeout
+  getStallTimeout,
+  LivenessWatchdog,
+  createUpstreamMonitor
 } from "./codebuddyHeartbeat.js";
 
 const SSE_HEADERS = {
@@ -61,7 +63,61 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
     console.log(`[STREAM] 🧠 CodeBuddy extended reasoning mode: ${stallTimeout / 1000}s stall timeout + 30s heartbeat`);
   }
 
-  let transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+  // State-of-the-art: LivenessWatchdog for CodeBuddy (matches CLI implementation)
+  let upstreamMonitor = null;
+  let watchdog = null;
+  let trackingStream = null;
+
+  if (provider === "codebuddy") {
+    // Create upstream monitor to track activity (heartbeats, content, thinking)
+    upstreamMonitor = createUpstreamMonitor(provider, model, `codebuddy-${connectionId}`);
+
+    // Create tracking transform stream that feeds upstreamMonitor
+    trackingStream = new TransformStream({
+      transform(chunk, controller) {
+        upstreamMonitor.onChunk(chunk);
+        controller.enqueue(chunk);
+      }
+    });
+
+    // Create LivenessWatchdog that monitors upstreamMonitor
+    watchdog = new LivenessWatchdog({
+      label: `codebuddy-${connectionId}`,
+      isActive: () => !streamController.signal.aborted,
+      getLastActivityAt: () => upstreamMonitor.getLastActivityAt(),
+      logger: console,
+      onStuck: (idleMs) => {
+        const stats = upstreamMonitor.getStats();
+        console.error(
+          `[WATCHDOG] 🚨 Connection stuck: ${Math.round(idleMs / 1000)}s since last activity. ` +
+          `Stats: chunks=${stats.chunkCount}, heartbeats=${stats.heartbeatCount}, ` +
+          `thinking=${stats.isThinkingMode}, bytes=${stats.totalBytes}`
+        );
+        // Abort the stream to trigger cleanup
+        streamController.abort();
+      }
+    });
+
+    // Start watchdog (checks every 30s, triggers at 90s)
+    watchdog.start();
+
+    // Cleanup on stream end
+    streamController.signal.addEventListener('abort', () => {
+      if (watchdog) watchdog.stop();
+    });
+  }
+
+  // Build pipeline: providerResponse → trackingStream → transformStream → heartbeatInjector
+  let transformedBody;
+  if (trackingStream) {
+    // CodeBuddy: Add tracking stream before transform
+    const trackedResponse = providerResponse.body.pipeThrough(trackingStream);
+    const trackedProviderResponse = new Response(trackedResponse, providerResponse);
+    transformedBody = pipeWithDisconnect(trackedProviderResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+  } else {
+    // Other providers: Standard pipeline
+    transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+  }
 
   // Inject heartbeat for providers with extended reasoning (CodeBuddy)
   if (needsHeartbeat(provider)) {
