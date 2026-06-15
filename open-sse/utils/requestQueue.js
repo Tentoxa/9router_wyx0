@@ -9,11 +9,12 @@
  */
 
 class TokenBucket {
-  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 120000) {
+  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 120000, maxQueueSize = 100) {
     this.provider = provider;
     this.maxPerMinute = maxPerMinute;
     this.maxConcurrent = maxConcurrent;
     this.queueTimeoutMs = queueTimeoutMs;
+    this.maxQueueSize = maxQueueSize; // P1 FIX: Prevent unbounded queue growth
     this.tokens = maxPerMinute;
     this.running = 0;
     this.queue = [];
@@ -51,6 +52,11 @@ class TokenBucket {
   }
 
   async run(fn) {
+    // P1 FIX: Reject request if queue is full to prevent unbounded growth
+    if (!this.canAcquire() && this.queue.length >= this.maxQueueSize) {
+      throw new Error(`Queue full: ${this.provider} has ${this.queue.length} pending requests (max: ${this.maxQueueSize})`);
+    }
+
     // Wait if we can't acquire a token (with timeout protection)
     if (!this.canAcquire()) {
       const queuePosition = this.queue.length + 1;

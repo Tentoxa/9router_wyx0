@@ -36,7 +36,16 @@ export const MEMORY_CONFIG = {
 export const STREAM_STALL_TIMEOUT_MS = 60 * 1000;
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
-export const FETCH_CONNECT_TIMEOUT_MS = 60 * 1000;
+// CodeBuddy CLI uses 300s (5 min) for STREAM_SAFE_TIMEOUT_MS
+// We use 300s as default to match upstream behavior
+export const FETCH_CONNECT_TIMEOUT_MS = 300 * 1000;
+
+// Provider-specific timeout overrides
+export const PROVIDER_TIMEOUTS = {
+  codebuddy: 300 * 1000, // 5 minutes (matches official CLI)
+  anthropic: 300 * 1000, // 5 minutes (large context windows)
+  default: 120 * 1000, // 2 minutes for other providers
+};
 
 // Default token limits
 export const DEFAULT_MAX_TOKENS = 64000;

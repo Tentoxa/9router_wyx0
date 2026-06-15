@@ -1,4 +1,4 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS, PROVIDER_TIMEOUTS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
@@ -124,12 +124,50 @@ export class BaseExecutor {
     const retryConfig = { ...DEFAULT_RETRY_CONFIG, ...this.config.retry };
 
     // Schedule retry via retryConfig[statusKey]. Returns true when caller should `urlIndex--; continue`
-    const tryRetry = async (urlIndex, statusKey, reason) => {
+    // Respects retry-after and retry-after-ms headers like official CodeBuddy CLI
+    // Falls back to exponential backoff with jitter if no retry-after headers present
+    const tryRetry = async (urlIndex, statusKey, reason, response = null) => {
       const { attempts, delayMs } = resolveRetryEntry(retryConfig[statusKey]);
       if (attempts <= 0 || retryAttemptsByUrl[urlIndex] >= attempts) return false;
       retryAttemptsByUrl[urlIndex]++;
-      log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${delayMs / 1000}s`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+
+      // Priority 1: retry-after-ms header (milliseconds)
+      let retryDelayMs = null;
+      if (response?.headers) {
+        const retryAfterMs = response.headers.get("retry-after-ms");
+        const retryAfter = response.headers.get("retry-after");
+
+        if (retryAfterMs && !isNaN(parseFloat(retryAfterMs))) {
+          retryDelayMs = parseFloat(retryAfterMs);
+          dbg("RETRY", `using retry-after-ms: ${retryDelayMs}ms`);
+        } else if (retryAfter) {
+          const parsed = parseFloat(retryAfter);
+          if (!isNaN(parsed)) {
+            retryDelayMs = parsed * 1000; // Convert seconds to ms
+            dbg("RETRY", `using retry-after: ${retryDelayMs}ms`);
+          }
+        }
+      }
+
+      // Priority 2: Exponential backoff with jitter (official CodeBuddy CLI formula)
+      // Formula: base * 2^(attempt-1) * jitter, capped at maxDelay
+      if (retryDelayMs === null) {
+        const base = 500; // 500ms base
+        const maxDelay = 8000; // 8 seconds max
+        const attempt = retryAttemptsByUrl[urlIndex];
+
+        // Exponential backoff: 500ms, 1s, 2s, 4s, 8s
+        const exponentialDelay = base * Math.pow(2, attempt - 1);
+
+        // Apply jitter: 75-100% of calculated delay
+        const jitter = 0.75 + Math.random() * 0.25;
+        retryDelayMs = Math.min(exponentialDelay * jitter, maxDelay);
+
+        dbg("RETRY", `using exponential backoff: ${retryDelayMs.toFixed(0)}ms (attempt ${attempt}, jitter ${(jitter * 100).toFixed(0)}%)`);
+      }
+
+      log?.debug?.("RETRY", `${reason} retry ${retryAttemptsByUrl[urlIndex]}/${attempts} after ${retryDelayMs / 1000}s`);
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
       return true;
     };
 
@@ -141,8 +179,10 @@ export class BaseExecutor {
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
       // Abort if upstream doesn't return response headers within connection timeout
+      // Use provider-specific timeout if available, otherwise fall back to config or default
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
+      const providerKey = this.provider.toLowerCase();
+      const timeoutMs = this.config?.timeoutMs || PROVIDER_TIMEOUTS[providerKey] || PROVIDER_TIMEOUTS.default || FETCH_CONNECT_TIMEOUT_MS;
       const connectTimer = setTimeout(() => {
         console.warn(`[CONNECT_TIMEOUT] ⏱️ aborting after ${timeoutMs}ms | provider=${this.provider} | url=${url} | urlIndex=${urlIndex}/${fallbackCount}`);
         connectCtrl.abort(new Error("fetch connect timeout"));

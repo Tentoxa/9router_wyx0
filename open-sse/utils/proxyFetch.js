@@ -187,6 +187,7 @@ async function tryGotScrapingFetch(url, options) {
 
 // DNS cache — use Map to avoid prototype pollution via malformed hostnames
 const DNS_CACHE = new Map();
+const DNS_CACHE_MAX_SIZE = 1000; // P1 FIX: Prevent unbounded growth
 const MITM_BYPASS_HOSTS = [
   "cloudcode-pa.googleapis.com",
   "daily-cloudcode-pa.googleapis.com",
@@ -220,6 +221,13 @@ async function resolveRealIP(hostname) {
         DNS_CACHE.delete(key);
       }
     }
+  }
+
+  // P1 FIX: Evict oldest entries if cache is full
+  if (DNS_CACHE.size >= DNS_CACHE_MAX_SIZE) {
+    const oldestKey = DNS_CACHE.keys().next().value;
+    DNS_CACHE.delete(oldestKey);
+    dbg("DNS", `evicted oldest entry (cache full: ${DNS_CACHE.size}/${DNS_CACHE_MAX_SIZE})`);
   }
 
   try {
@@ -324,6 +332,7 @@ async function getDispatcher(proxyUrl) {
       const oldestKey = proxyDispatchers.keys().next().value;
       const oldDispatcher = proxyDispatchers.get(oldestKey);
       proxyDispatchers.delete(oldestKey);
+      dispatcherCreationTime.delete(oldestKey); // P0 FIX: Clean up creation time map
 
       // CRITICAL FIX: Close the dispatcher to release connections
       try {
@@ -359,9 +368,16 @@ async function createBypassRequest(parsedUrl, realIP, options) {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
     let req = null;
+    let abortListener = null;
 
-    // Socket cleanup helper
+    // Socket cleanup helper - ensures no socket leaks
     const cleanup = () => {
+      // Remove abort listener to prevent memory leak
+      if (abortListener && options.signal) {
+        options.signal.removeEventListener("abort", abortListener);
+        abortListener = null;
+      }
+
       if (req) {
         try {
           req.destroy();
@@ -411,12 +427,19 @@ async function createBypassRequest(parsedUrl, realIP, options) {
           },
           json: async () => JSON.parse(await response.text()),
         };
+        // Don't cleanup here - socket stays open for response streaming
+        // Cleanup happens when response body is fully consumed or on error
         resolve(response);
       });
 
       req.on("error", (err) => {
         cleanup();
         reject(err);
+      });
+
+      req.on("close", () => {
+        // Socket closed after response body consumed
+        cleanup();
       });
 
       if (options.body) {
@@ -438,10 +461,11 @@ async function createBypassRequest(parsedUrl, realIP, options) {
     }
 
     if (options.signal) {
-      options.signal.addEventListener("abort", () => {
+      abortListener = () => {
         cleanup();
         reject(new Error("Request aborted"));
-      }, { once: true });
+      };
+      options.signal.addEventListener("abort", abortListener, { once: true });
     }
   });
 }
@@ -666,8 +690,9 @@ function periodicCleanup() {
   }
 }
 
-// Run periodic cleanup
-setInterval(periodicCleanup, CLEANUP_INTERVAL_MS);
+// Run periodic cleanup with unref() to allow process to exit
+const cleanupInterval = setInterval(periodicCleanup, CLEANUP_INTERVAL_MS);
+cleanupInterval.unref(); // Don't keep process alive just for cleanup
 
 // Graceful shutdown handler
 export async function closeAllDispatchers() {
