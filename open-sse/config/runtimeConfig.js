@@ -41,8 +41,11 @@ export const STREAM_STALL_TIMEOUT_MS = 60 * 1000;
 export const FETCH_CONNECT_TIMEOUT_MS = 300 * 1000;
 
 // Provider-specific timeout overrides
+// CodeBuddy CLI uses STREAM_SAFE_TIMEOUT_MS = 300s, but production logs show
+// extended reasoning requests need 4-5+ minutes for first token (TTFT)
+// Increased to 600s (10 min) to prevent cascading queue buildup
 export const PROVIDER_TIMEOUTS = {
-  codebuddy: 300 * 1000, // 5 minutes (matches official CLI)
+  codebuddy: 600 * 1000, // 10 minutes (extended reasoning needs 4-5 min TTFT)
   anthropic: 300 * 1000, // 5 minutes (large context windows)
   default: 120 * 1000, // 2 minutes for other providers
 };

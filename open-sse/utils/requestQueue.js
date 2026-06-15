@@ -9,11 +9,11 @@
  */
 
 class TokenBucket {
-  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 120000, maxQueueSize = 100) {
+  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 60000, maxQueueSize = 100) {
     this.provider = provider;
     this.maxPerMinute = maxPerMinute;
     this.maxConcurrent = maxConcurrent;
-    this.queueTimeoutMs = queueTimeoutMs;
+    this.queueTimeoutMs = queueTimeoutMs; // Default 60s (was 120s) - reject if waiting too long
     this.maxQueueSize = maxQueueSize; // P1 FIX: Prevent unbounded queue growth
     this.tokens = maxPerMinute;
     this.running = 0;
