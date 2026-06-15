@@ -19,42 +19,78 @@ async function getGlobalDispatcher() {
       },
       // Max concurrent connections per host
       connections: 128,
-      // CRITICAL: Disable keep-alive for CodeBuddy to prevent connection corruption
-      // CodeBuddy server has issues with connection reuse - each request needs fresh connection
-      keepAliveTimeout: 0, // Disable keep-alive
-      keepAliveMaxTimeout: 0,
-      // Disable pipelining (not needed with keep-alive disabled)
+      // CRITICAL: Enable keep-alive with 2s interval (matches official CodeBuddy CLI)
+      // This prevents connection overhead while avoiding stale connections
+      keepAliveTimeout: 2000, // 2 seconds (matches CodeBuddy CLI keepAliveMsecs)
+      keepAliveMaxTimeout: 60000, // 60 seconds initial delay (matches CodeBuddy CLI)
+      // Disable pipelining for now (can be enabled later if needed)
       pipelining: 0,
       // FIX: Increase body and headers timeout for large requests (anthropic-compatible with 1.45MB bodies)
       bodyTimeout: 300000, // 5 minutes (was default 30s)
       headersTimeout: 300000, // 5 minutes (was default 30s)
     });
-    dbg("PROXY", `global dispatcher created with keep-alive DISABLED (fresh connection per request)`);
+    dbg("PROXY", `global dispatcher created with keep-alive ENABLED (2s interval, 60s max)`);
   }
   return globalDispatcher;
 }
 
-// Refresh global dispatcher frequently to prevent connection state corruption
-// CodeBuddy connections become "dirty" quickly - need fresh connections
+// Refresh global dispatcher periodically to prevent connection state corruption
+// Changed from 30s to 10 minutes - aggressive refresh caused race conditions and performance issues
 let globalDispatcherAge = Date.now();
-const DISPATCHER_REFRESH_MS = 30 * 1000; // 30 seconds - very aggressive refresh
+const DISPATCHER_REFRESH_MS = 10 * 60 * 1000; // 10 minutes (was 30s)
+
+// Lock to prevent race conditions during dispatcher refresh
+let refreshPromise = null;
+
+/**
+ * Force refresh dispatcher on connection errors
+ */
+function forceRefreshDispatcher(error) {
+  const errorCode = error.code || error.errno;
+  const isConnectionError = ['ECONNRESET', 'ETIMEDOUT', 'ECONNREFUSED', 'UND_ERR_SOCKET'].includes(errorCode);
+
+  if (isConnectionError) {
+    dbg("PROXY", `force refresh due to ${errorCode} error`);
+    globalDispatcherAge = 0; // Force refresh on next request
+  }
+}
 
 async function getFreshGlobalDispatcher() {
+  // If refresh is already in progress, wait for it
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
   const now = Date.now();
-  if (now - globalDispatcherAge > DISPATCHER_REFRESH_MS) {
-    // Close old dispatcher
-    if (globalDispatcher) {
+  if (now - globalDispatcherAge <= DISPATCHER_REFRESH_MS) {
+    return globalDispatcher || getGlobalDispatcher();
+  }
+
+  // Start refresh with lock
+  refreshPromise = (async () => {
+    const oldDispatcher = globalDispatcher;
+    globalDispatcher = null;
+    globalDispatcherAge = Date.now();
+
+    const newDispatcher = await getGlobalDispatcher();
+
+    if (oldDispatcher) {
       try {
-        await globalDispatcher.close();
+        await oldDispatcher.close();
         dbg("PROXY", `global dispatcher refreshed (closed after ${Math.round((now - globalDispatcherAge) / 1000)}s)`);
       } catch (err) {
         console.warn(`[ProxyFetch] error closing old global dispatcher: ${err.message}`);
       }
     }
-    globalDispatcher = null;
-    globalDispatcherAge = now;
+
+    return newDispatcher;
+  })();
+
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
   }
-  return getGlobalDispatcher();
 }
 
 // ─── TLS fingerprinting via got-scraping (browser-like JA3) ───────────────
@@ -503,6 +539,9 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
         signalReason: options?.signal?.reason?.message
       });
 
+      // Force dispatcher refresh on connection errors
+      forceRefreshDispatcher(proxyError);
+
       // If strictProxy is enabled, fail hard instead of falling back to direct
       if (proxyOptions?.strictProxy === true) {
         throw new Error(`[ProxyFetch] Proxy required but failed (strictProxy=true): ${proxyError.message}`);
@@ -544,6 +583,10 @@ export async function proxyAwareFetch(url, options = {}, proxyOptions = null) {
       signalAborted: options?.signal?.aborted,
       signalReason: options?.signal?.reason?.message
     });
+
+    // Force dispatcher refresh on connection errors
+    forceRefreshDispatcher(directError);
+
     throw directError;
   }
 }
