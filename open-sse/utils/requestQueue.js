@@ -9,11 +9,11 @@
  */
 
 class TokenBucket {
-  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 60000, maxQueueSize = 100) {
+  constructor(provider, maxPerMinute = 60, maxConcurrent = 10, queueTimeoutMs = 300000, maxQueueSize = 100) {
     this.provider = provider;
     this.maxPerMinute = maxPerMinute;
     this.maxConcurrent = maxConcurrent;
-    this.queueTimeoutMs = queueTimeoutMs; // Default 60s (was 120s) - reject if waiting too long
+    this.queueTimeoutMs = queueTimeoutMs; // Default 300s (5 min) - prevents 4-5 retries that cause 278s TTFT
     this.maxQueueSize = maxQueueSize; // P1 FIX: Prevent unbounded queue growth
     this.tokens = maxPerMinute;
     this.running = 0;
@@ -51,7 +51,7 @@ class TokenBucket {
     return now - this.lastActivity > 10 * 60 * 1000; // 10 minutes
   }
 
-  async run(fn) {
+  async run(fn, outerSignal = null) {
     // P1 FIX: Reject request if queue is full to prevent unbounded growth
     if (!this.canAcquire() && this.queue.length >= this.maxQueueSize) {
       throw new Error(`Queue full: ${this.provider} has ${this.queue.length} pending requests (max: ${this.maxQueueSize})`);
@@ -64,10 +64,14 @@ class TokenBucket {
 
       await new Promise((resolve, reject) => {
         let timeoutId;
+        let outerAbortHandler;
 
         // Cleanup function to clear timeout and remove from queue
         const cleanup = () => {
           if (timeoutId) clearTimeout(timeoutId);
+          if (outerSignal && outerAbortHandler) {
+            outerSignal.removeEventListener('abort', outerAbortHandler);
+          }
           const index = this.queue.findIndex(item => item.resolve === resolve);
           if (index !== -1) this.queue.splice(index, 1);
         };
@@ -77,6 +81,20 @@ class TokenBucket {
           cleanup();
           reject(new Error(`Queue timeout: ${this.provider} request waited ${this.queueTimeoutMs}ms`));
         }, this.queueTimeoutMs);
+
+        // FIX: Bind to outer abort signal to prevent zombie promises on client disconnect
+        if (outerSignal) {
+          if (outerSignal.aborted) {
+            cleanup();
+            reject(new Error(`Request aborted while queued for ${this.provider}`));
+            return;
+          }
+          outerAbortHandler = () => {
+            cleanup();
+            reject(new Error(`Request aborted while queued for ${this.provider}`));
+          };
+          outerSignal.addEventListener('abort', outerAbortHandler, { once: true });
+        }
 
         // Add to queue with cleanup function
         this.queue.push({ resolve, cleanup });
@@ -118,11 +136,11 @@ export function getProviderQueue(provider, maxPerMinute = 60, maxConcurrent = 10
 /**
  * Run a function with token bucket rate limiting for a specific provider
  */
-export async function withConcurrencyLimit(provider, fn, maxConcurrent = 10) {
+export async function withConcurrencyLimit(provider, fn, maxConcurrent = 10, outerSignal = null) {
   // CodeBuddy: 60 requests per minute, max 10 concurrent (matches official CLI)
   const maxPerMinute = provider.toLowerCase().includes('codebuddy') ? 60 : 120;
   const bucket = getProviderQueue(provider, maxPerMinute, maxConcurrent);
-  return bucket.run(fn);
+  return bucket.run(fn, outerSignal);
 }
 
 /**

@@ -108,7 +108,7 @@ export class BaseExecutor {
     const maxConcurrent = isCodeBuddy ? 10 : null;
 
     if (maxConcurrent) {
-      return withConcurrencyLimit(this.provider, () => this._executeInternal({ model, body, stream, credentials, signal, log, proxyOptions }), maxConcurrent);
+      return withConcurrencyLimit(this.provider, () => this._executeInternal({ model, body, stream, credentials, signal, log, proxyOptions }), maxConcurrent, signal);
     }
 
     return this._executeInternal({ model, body, stream, credentials, signal, log, proxyOptions });
@@ -187,7 +187,24 @@ export class BaseExecutor {
         console.warn(`[CONNECT_TIMEOUT] ⏱️ aborting after ${timeoutMs}ms | provider=${this.provider} | url=${url} | urlIndex=${urlIndex}/${fallbackCount}`);
         connectCtrl.abort(new Error("fetch connect timeout"));
       }, timeoutMs);
-      const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
+
+      // FIX: Manual AbortSignal management to prevent listener accumulation
+      // Instead of AbortSignal.any(), manually forward abort events with cleanup
+      const mergedCtrl = new AbortController();
+      const onOuterAbort = () => mergedCtrl.abort(signal?.reason);
+      const onConnectAbort = () => mergedCtrl.abort(new Error("fetch connect timeout"));
+
+      // Attach listeners (only if signal exists and not already aborted)
+      if (signal) {
+        if (signal.aborted) {
+          onOuterAbort();
+        } else {
+          signal.addEventListener("abort", onOuterAbort, { once: true });
+        }
+      }
+      connectCtrl.signal.addEventListener("abort", onConnectAbort, { once: true });
+
+      const mergedSignal = mergedCtrl.signal;
 
       // Define fetchT0 and targetHost outside try block so they're available in catch
       const fetchT0 = Date.now();
@@ -226,6 +243,9 @@ export class BaseExecutor {
         }, proxyOptions);
 
         clearTimeout(connectTimer);
+        // FIX: Cleanup AbortSignal listeners to prevent memory leaks
+        signal?.removeEventListener("abort", onOuterAbort);
+        connectCtrl.signal.removeEventListener("abort", onConnectAbort);
         const ttft = Date.now() - fetchT0;
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
@@ -251,6 +271,9 @@ export class BaseExecutor {
         return { response, url, headers, transformedBody };
       } catch (error) {
         clearTimeout(connectTimer);
+        // FIX: Cleanup AbortSignal listeners to prevent memory leaks
+        signal?.removeEventListener("abort", onOuterAbort);
+        connectCtrl.signal.removeEventListener("abort", onConnectAbort);
         const fetchDuration = Date.now() - fetchT0;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
 

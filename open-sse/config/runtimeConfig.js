@@ -33,7 +33,10 @@ export const MEMORY_CONFIG = {
 };
 
 // Stream stall timeout: abort if no chunk received within this duration
-export const STREAM_STALL_TIMEOUT_MS = 60 * 1000;
+// Official CodeBuddy CLI uses 1,200,000ms (20 min) for extended reasoning
+// Claude Opus 4.7 with forceAdaptiveThinking can take 4-5+ minutes during thinking phase
+// Server sends 30s heartbeats to keep connection alive, but no content chunks
+export const STREAM_STALL_TIMEOUT_MS = 1200 * 1000; // 20 minutes (matches official CLI)
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 // CodeBuddy CLI uses 300s (5 min) for STREAM_SAFE_TIMEOUT_MS
