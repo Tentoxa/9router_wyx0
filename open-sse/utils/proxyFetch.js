@@ -25,6 +25,9 @@ async function getGlobalDispatcher() {
       keepAliveMaxTimeout: 0,
       // Disable pipelining (not needed with keep-alive disabled)
       pipelining: 0,
+      // FIX: Increase body and headers timeout for large requests (anthropic-compatible with 1.45MB bodies)
+      bodyTimeout: 300000, // 5 minutes (was default 30s)
+      headersTimeout: 300000, // 5 minutes (was default 30s)
     });
     dbg("PROXY", `global dispatcher created with keep-alive DISABLED (fresh connection per request)`);
   }
