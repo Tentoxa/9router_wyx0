@@ -56,11 +56,26 @@ export function createHeartbeatInjector() {
   let heartbeatTimer = null;
   let lastHeartbeatAt = 0;
   let heartbeatCount = 0;
+  let isStreamClosed = false;
+
+  const cleanup = () => {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    isStreamClosed = true;
+  };
 
   return new TransformStream({
     start(controller) {
       // Start heartbeat timer immediately
       heartbeatTimer = setInterval(() => {
+        // Guard: don't write to closed stream
+        if (isStreamClosed) {
+          cleanup();
+          return;
+        }
+
         try {
           const now = Date.now();
 
@@ -72,42 +87,51 @@ export function createHeartbeatInjector() {
           controller.enqueue(heartbeatBytes);
 
           heartbeatCount++;
+          const timeSinceLast = lastHeartbeatAt > 0 ? Math.round((now - lastHeartbeatAt) / 1000) : 0;
           lastHeartbeatAt = now;
 
           // Log first heartbeat and every 10th heartbeat
           if (heartbeatCount === 1 || heartbeatCount % 10 === 0) {
-            console.log(`[HEARTBEAT] 💓 Sent ${heartbeatCount} heartbeats (${Math.round((now - lastHeartbeatAt) / 1000)}s since last)`);
+            console.log(`[HEARTBEAT] 💓 Sent ${heartbeatCount} heartbeats (${timeSinceLast}s since last)`);
           }
         } catch (err) {
-          console.error("[HEARTBEAT] Failed to inject heartbeat:", err.message);
-          clearInterval(heartbeatTimer);
+          // ERR_STREAM_WRITE_AFTER_END is expected when stream closes
+          if (err.code === 'ERR_STREAM_WRITE_AFTER_END' || err.message?.includes('closed')) {
+            cleanup();
+          } else {
+            console.error("[HEARTBEAT] Failed to inject heartbeat:", err.message);
+            cleanup();
+          }
         }
       }, HEARTBEAT_INTERVAL_MS);
     },
 
     transform(chunk, controller) {
+      // Guard: don't process if stream is closed
+      if (isStreamClosed) return;
+
       // Pass through all upstream data unchanged
-      controller.enqueue(chunk);
+      try {
+        controller.enqueue(chunk);
+      } catch (err) {
+        // Stream closed during transform
+        if (err.code === 'ERR_STREAM_WRITE_AFTER_END' || err.message?.includes('closed')) {
+          cleanup();
+        }
+      }
     },
 
     flush(controller) {
       // Clean up heartbeat timer when stream ends
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
-
       if (heartbeatCount > 0) {
         console.log(`[HEARTBEAT] ✅ Stream complete, sent ${heartbeatCount} heartbeats total`);
       }
+      cleanup();
     },
 
     cancel() {
       // Clean up on stream cancellation
-      if (heartbeatTimer) {
-        clearInterval(heartbeatTimer);
-        heartbeatTimer = null;
-      }
+      cleanup();
     }
   });
 }
