@@ -29,14 +29,14 @@ const DEFAULT_LIVENESS_STUCK_MS = 90000; // 90s = "server is dead"
  * Check if provider needs heartbeat mechanism
  */
 export function needsHeartbeat(provider) {
-  return provider === "codebuddy";
+  return provider === "codebuddy" || provider === "codebuddy-cn";
 }
 
 /**
  * Get CodeBuddy-specific stall timeout
  */
 export function getStallTimeout(provider) {
-  return provider === "codebuddy" ? CODEBUDDY_STALL_TIMEOUT_MS : 180000; // 3min default
+  return needsHeartbeat(provider) ? CODEBUDDY_STALL_TIMEOUT_MS : 180000; // 3min default
 }
 
 /**

@@ -49,6 +49,7 @@ export const FETCH_CONNECT_TIMEOUT_MS = 300 * 1000;
 // Increased to 600s (10 min) to prevent cascading queue buildup
 export const PROVIDER_TIMEOUTS = {
   codebuddy: 600 * 1000, // 10 minutes (extended reasoning needs 4-5 min TTFT)
+  "codebuddy-cn": 600 * 1000,
   anthropic: 300 * 1000, // 5 minutes (large context windows)
   default: 120 * 1000, // 2 minutes for other providers
 };

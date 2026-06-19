@@ -361,6 +361,19 @@ export const PROVIDERS = {
     format: "openai",
     refreshUrl: "https://www.codebuddy.ai/v2/plugin/auth/token/refresh",
   },
+  "codebuddy-cn": {
+    baseUrl: "https://copilot.tencent.com/v2/chat/completions",
+    format: "openai",
+    refreshUrl: "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+    headers: {
+      "User-Agent": "CLI/2.108.1 CodeBuddy/2.108.1",
+      "X-Product": "SaaS",
+      "X-IDE-Type": "CLI",
+      "X-IDE-Name": "CLI",
+      "X-Requested-With": "XMLHttpRequest",
+      "X-CodeBuddy-Request": "1",
+    },
+  },
   opencode: {
     baseUrl: "https://opencode.ai",
     format: "openai",

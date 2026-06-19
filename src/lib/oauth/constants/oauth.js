@@ -260,6 +260,19 @@ export const CODEBUDDY_CONFIG = {
   pollInterval: 5000,
 };
 
+export const CODEBUDDY_CN_CONFIG = {
+  baseUrl: "https://copilot.tencent.com",
+  stateUrl: "https://copilot.tencent.com/v2/plugin/auth/state",
+  tokenUrl: "https://copilot.tencent.com/v2/plugin/auth/token",
+  accountUrl: "https://copilot.tencent.com/v2/plugin/login/account",
+  accountsUrl: "https://copilot.tencent.com/v2/plugin/accounts",
+  refreshUrl: "https://copilot.tencent.com/v2/plugin/auth/token/refresh",
+  userAgent: "CLI/2.63.2 CodeBuddy/2.63.2",
+  domain: "copilot.tencent.com",
+  platform: "CLI",
+  pollInterval: 5000,
+};
+
 // OAuth timeout (5 minutes)
 export const OAUTH_TIMEOUT = 300000;
 
@@ -281,4 +294,5 @@ export const PROVIDERS = {
   CLINE: "cline",
   GITLAB: "gitlab",
   CODEBUDDY: "codebuddy",
+  CODEBUDDY_CN: "codebuddy-cn",
 };

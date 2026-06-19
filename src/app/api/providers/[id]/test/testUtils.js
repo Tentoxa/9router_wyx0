@@ -18,6 +18,7 @@ import {
   CLINE_CONFIG,
   KILOCODE_CONFIG,
   CODEBUDDY_CONFIG,
+  CODEBUDDY_CN_CONFIG,
 } from "@/lib/oauth/constants/oauth";
 import { buildClineHeaders } from "@/shared/utils/clineAuth";
 
@@ -93,6 +94,7 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
   },
   codebuddy: { tokenExists: true },
+  "codebuddy-cn": { tokenExists: true },
 };
 
 async function probeClineAccessToken(accessToken) {
@@ -212,15 +214,16 @@ async function refreshOAuthToken(connection) {
       };
     }
 
-    if (provider === "codebuddy") {
-      const response = await fetch(CODEBUDDY_CONFIG.refreshUrl, {
+    if (provider === "codebuddy" || provider === "codebuddy-cn") {
+      const config = provider === "codebuddy-cn" ? CODEBUDDY_CN_CONFIG : CODEBUDDY_CONFIG;
+      const response = await fetch(config.refreshUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
-          "User-Agent": CODEBUDDY_CONFIG.userAgent,
+          "User-Agent": config.userAgent,
           "X-Requested-With": "XMLHttpRequest",
-          "X-Domain": CODEBUDDY_CONFIG.domain,
+          "X-Domain": config.domain,
           "X-Refresh-Token": refreshToken,
           "X-Auth-Refresh-Source": "plugin",
           "X-Product": "SaaS",

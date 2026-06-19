@@ -243,7 +243,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
         // CodeBuddy: Apply cooldown after success to prevent immediate re-selection
         // CodeBuddy rate-limits accounts immediately after first request
-        if (provider === "codebuddy") {
+        if (provider === "codebuddy" || provider === "codebuddy-cn") {
           const cooldownMs = 5000; // 5 seconds cooldown
           const cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
           await updateProviderCredentials(credentials.connectionId, {

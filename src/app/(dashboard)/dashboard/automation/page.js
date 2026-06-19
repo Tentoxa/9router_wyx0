@@ -111,7 +111,14 @@ function KiroAutomationPanel({ providerInfo, onRefresh }) {
   );
 }
 
-function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
+function CodeBuddyBulkTokenModal({
+  isOpen,
+  onClose,
+  onSuccess,
+  provider = "codebuddy",
+  serviceName = "CodeBuddy",
+  supportsApiKey = true,
+}) {
   const [tokens, setTokens] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -121,7 +128,7 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
     setLoading(true);
     setResult(null);
     try {
-      const res = await fetch("/api/oauth/codebuddy/bulk-token", {
+      const res = await fetch(`/api/oauth/${provider}/bulk-token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tokens }),
@@ -148,7 +155,7 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
     if (result.formatCounts) {
       const { "access-only": ao, "with-refresh": wr, "with-api-key": wa } = result.formatCounts;
       const breakdown = [];
-      if (wa) breakdown.push(`${wa} with API key`);
+      if (supportsApiKey && wa) breakdown.push(`${wa} with API key`);
       if (wr) breakdown.push(`${wr} with refresh token`);
       if (ao) breakdown.push(`${ao} access-only`);
       if (breakdown.length) parts.push(`(${breakdown.join(", ")})`);
@@ -160,8 +167,10 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div className="w-full max-w-lg rounded-xl border border-border bg-surface p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <h3 className="mb-4 text-lg font-semibold text-text-main">CodeBuddy OAuth Token Import</h3>
-        <p className="mb-2 text-xs text-text-muted">Paste CodeBuddy OAuth tokens, one per line. Supports three formats:</p>
+        <h3 className="mb-4 text-lg font-semibold text-text-main">{serviceName} OAuth Token Import</h3>
+        <p className="mb-2 text-xs text-text-muted">
+          Paste {serviceName} OAuth tokens, one per line. Supports {supportsApiKey ? "three" : "two"} formats:
+        </p>
         <div className="mb-3 space-y-2 rounded-lg bg-background/50 p-3 text-xs text-text-muted">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-[16px] text-primary leading-none">check_circle</span>
@@ -171,18 +180,20 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
             <span className="material-symbols-outlined text-[16px] text-primary leading-none">check_circle</span>
             <span className="flex items-center gap-1.5"><code className="text-[10px] bg-border/50 px-1.5 py-0.5 rounded leading-none">accessToken:refreshToken</code><span>— enables auto-refresh</span></span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-[16px] text-primary leading-none">check_circle</span>
-            <span className="flex items-center gap-1.5"><code className="text-[10px] bg-border/50 px-1.5 py-0.5 rounded leading-none">accessToken:refreshToken:apiKey</code><span>— 365-day access</span></span>
-          </div>
+          {supportsApiKey && (
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[16px] text-primary leading-none">check_circle</span>
+              <span className="flex items-center gap-1.5"><code className="text-[10px] bg-border/50 px-1.5 py-0.5 rounded leading-none">accessToken:refreshToken:apiKey</code><span>— 365-day access</span></span>
+            </div>
+          )}
         </div>
         <textarea
           className="mb-3 w-full rounded-lg border border-border bg-background p-3 font-mono text-xs text-text-main placeholder:text-text-muted focus:border-primary focus:outline-none"
           rows={8}
           placeholder={
             "eyJhbGciOiJSUzI1NiIs...\n" +
-            "eyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJSUzI1NiIs...\n" +
-            "eyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJSUzI1NiIs...:ak_abc123..."
+            "eyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJSUzI1NiIs..." +
+            (supportsApiKey ? "\neyJhbGciOiJSUzI1NiIs...:eyJhbGciOiJSUzI1NiIs...:ak_abc123..." : "")
           }
           value={tokens}
           onChange={(e) => setTokens(e.target.value)}
@@ -209,27 +220,33 @@ function CodeBuddyBulkTokenModal({ isOpen, onClose, onSuccess }) {
   );
 }
 
-function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
+function CodeBuddyAutomationPanel({ providerInfo, onRefresh, automationProvider }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isBulkOpen, setIsBulkOpen] = useState(false);
   const [isBulkTokenOpen, setIsBulkTokenOpen] = useState(false);
+  const providerId = automationProvider?.id || "codebuddy";
+  const serviceName = automationProvider?.label || providerInfo?.name || "CodeBuddy";
+  const allowBrowserBulk = automationProvider?.allowBrowserBulk !== false;
+  const supportsApiKey = automationProvider?.supportsManualApiKey !== false;
 
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        <button
-          type="button"
-          onClick={() => setIsBulkOpen(true)}
-          className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
-        >
-          <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
-            <span className="material-symbols-outlined text-[20px] text-primary">group_add</span>
-            Auto Login + Generate Key
-          </span>
-          <span className="text-xs leading-relaxed text-text-muted">
-            Run bulk GSuite gmail|password login, create a CodeBuddy Access Key, and save it for model calls.
-          </span>
-        </button>
+        {allowBrowserBulk && (
+          <button
+            type="button"
+            onClick={() => setIsBulkOpen(true)}
+            className="flex min-h-[112px] min-w-0 flex-col gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+          >
+            <span className="flex items-center gap-2 text-sm font-semibold text-text-main">
+              <span className="material-symbols-outlined text-[20px] text-primary">group_add</span>
+              Auto Login + Generate Key
+            </span>
+            <span className="text-xs leading-relaxed text-text-muted">
+              Run bulk GSuite gmail|password login, create a CodeBuddy Access Key, and save it for model calls.
+            </span>
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setIsBulkTokenOpen(true)}
@@ -240,7 +257,7 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
             OAuth Token Import
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
-            Paste OAuth tokens with optional refresh tokens and API keys for extended access.
+            Paste OAuth tokens with optional refresh tokens{supportsApiKey ? " and API keys for extended access" : ""}.
           </span>
         </button>
         <button
@@ -253,26 +270,31 @@ function CodeBuddyAutomationPanel({ providerInfo, onRefresh }) {
             Device OAuth Login
           </span>
           <span className="text-xs leading-relaxed text-text-muted">
-            Open CodeBuddy browser login and poll until the OAuth token is saved.
+            Open {serviceName} login URL and poll until the OAuth token is saved.
           </span>
         </button>
       </div>
       <CodeBuddyBulkTokenModal
         isOpen={isBulkTokenOpen}
+        provider={providerId}
+        serviceName={serviceName}
+        supportsApiKey={supportsApiKey}
         onClose={() => setIsBulkTokenOpen(false)}
         onSuccess={onRefresh}
       />
-      <BulkAccountAutomationModal
-        isOpen={isBulkOpen}
-        provider="codebuddy"
-        title="CodeBuddy Bulk GSuite Login + Access Key"
-        serviceName="CodeBuddy"
-        onSuccess={onRefresh}
-        onClose={() => setIsBulkOpen(false)}
-      />
+      {allowBrowserBulk && (
+        <BulkAccountAutomationModal
+          isOpen={isBulkOpen}
+          provider="codebuddy"
+          title="CodeBuddy Bulk GSuite Login + Access Key"
+          serviceName="CodeBuddy"
+          onSuccess={onRefresh}
+          onClose={() => setIsBulkOpen(false)}
+        />
+      )}
       <OAuthModal
         isOpen={isOpen}
-        provider="codebuddy"
+        provider={providerId}
         providerInfo={providerInfo}
         onSuccess={() => {
           onRefresh?.();
@@ -354,7 +376,19 @@ const AUTOMATION_PROVIDERS = [
     label: "CodeBuddy",
     icon: "smart_toy",
     description: "Bulk GSuite automation and browser OAuth polling login.",
-    supportedModes: ["bulk-account", "device-oauth"],
+    supportedModes: ["bulk-account", "bulk-token", "device-oauth"],
+    allowBrowserBulk: true,
+    supportsManualApiKey: true,
+    component: CodeBuddyAutomationPanel,
+  },
+  {
+    id: "codebuddy-cn",
+    label: "CodeBuddy CN",
+    icon: "smart_toy",
+    description: "Manual bulk token import and OAuth polling login.",
+    supportedModes: ["bulk-token", "device-oauth"],
+    allowBrowserBulk: false,
+    supportsManualApiKey: false,
     component: CodeBuddyAutomationPanel,
   },
   {
@@ -467,7 +501,7 @@ export default function AutomationPage() {
             <Badge variant="success">{getConnectionLabel(providerCounts[activeProvider.id] || 0)}</Badge>
           </div>
 
-          <ProviderPanel providerInfo={providerInfo} onRefresh={fetchConnections} />
+          <ProviderPanel providerInfo={providerInfo} automationProvider={activeProvider} onRefresh={fetchConnections} />
         </div>
       </Card>
     </div>

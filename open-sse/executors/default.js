@@ -355,6 +355,7 @@ export class DefaultExecutor extends BaseExecutor {
       gemini: () => this.refreshGoogle(credentials.refreshToken, proxyOptions),
       kiro: () => this.refreshKiro(credentials.refreshToken, proxyOptions),
       codebuddy: () => this.refreshCodeBuddy(credentials.refreshToken, proxyOptions),
+      "codebuddy-cn": () => this.refreshCodeBuddy(credentials.refreshToken, proxyOptions, "codebuddy-cn"),
       cline: () => this.refreshCline(credentials.refreshToken, proxyOptions),
       "kimi-coding": () => this.refreshKimiCoding(credentials.refreshToken, proxyOptions),
       kilocode: () => this.refreshKilocode(credentials.refreshToken, proxyOptions)
@@ -429,15 +430,17 @@ export class DefaultExecutor extends BaseExecutor {
     return { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken || refreshToken, expiresIn: tokens.expiresIn };
   }
 
-  async refreshCodeBuddy(refreshToken, proxyOptions = null) {
-    const response = await proxyAwareFetch(PROVIDERS.codebuddy.refreshUrl, {
+  async refreshCodeBuddy(refreshToken, proxyOptions = null, provider = "codebuddy") {
+    const config = PROVIDERS[provider] || PROVIDERS.codebuddy;
+    const domain = provider === "codebuddy-cn" ? "copilot.tencent.com" : "www.codebuddy.ai";
+    const response = await proxyAwareFetch(config.refreshUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "CLI/2.63.2 CodeBuddy/2.63.2",
         "X-Requested-With": "XMLHttpRequest",
-        "X-Domain": "www.codebuddy.ai",
+        "X-Domain": domain,
         "X-Refresh-Token": refreshToken,
         "X-Auth-Refresh-Source": "plugin",
         "X-Product": "SaaS",

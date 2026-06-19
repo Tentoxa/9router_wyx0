@@ -59,7 +59,7 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
 
   // Provider-specific stall timeout (CodeBuddy needs 20min for extended reasoning)
   const stallTimeout = getStallTimeout(provider);
-  if (provider === "codebuddy") {
+  if (needsHeartbeat(provider)) {
     console.log(`[STREAM] 🧠 CodeBuddy extended reasoning mode: ${stallTimeout / 1000}s stall timeout + 30s heartbeat`);
   }
 
@@ -68,9 +68,9 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
   let watchdog = null;
   let trackingStream = null;
 
-  if (provider === "codebuddy") {
+  if (needsHeartbeat(provider)) {
     // Create upstream monitor to track activity (heartbeats, content, thinking)
-    upstreamMonitor = createUpstreamMonitor(provider, model, `codebuddy-${connectionId}`);
+    upstreamMonitor = createUpstreamMonitor(provider, model, `${provider}-${connectionId}`);
 
     // Create tracking transform stream that feeds upstreamMonitor
     trackingStream = new TransformStream({
@@ -82,7 +82,7 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
 
     // Create LivenessWatchdog that monitors upstreamMonitor
     watchdog = new LivenessWatchdog({
-      label: `codebuddy-${connectionId}`,
+      label: `${provider}-${connectionId}`,
       isActive: () => !streamController.signal.aborted,
       getLastActivityAt: () => upstreamMonitor.getLastActivityAt(),
       logger: console,

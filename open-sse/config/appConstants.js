@@ -159,6 +159,7 @@ export const REFRESH_LEAD_MS = {
   iflow:       24 * 60 * 60 * 1000,     // 24 hours
   qwen:        20 * 60 * 1000,          // 20 minutes
   codebuddy:   20 * 60 * 1000,          // 20 minutes
+  "codebuddy-cn": 20 * 60 * 1000,        // 20 minutes
   "kimi-coding": 5 * 60 * 1000,         // 5 minutes
   antigravity:  5 * 60 * 1000,          // 5 minutes
 };
