@@ -269,6 +269,7 @@ export const USAGE_SUPPORTED_PROVIDERS = [
   "antigravity",
   "kiro",
   "codebuddy",
+  "codebuddy-cn",
   "qoder",
   "github",
   "codex",

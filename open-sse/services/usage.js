@@ -53,7 +53,12 @@ const CLAUDE_CONFIG = {
 };
 
 const CODEBUDDY_CONFIG = {
+  label: "CodeBuddy",
   usageUrl: "https://www.codebuddy.ai/v2/billing/meter/get-user-resource",
+  baseUrl: "https://www.codebuddy.ai",
+  domain: "www.codebuddy.ai",
+  accountDomain: "www.codebuddy.ai",
+  useConnectionDomainForUsage: true,
   productCode: "p_tcaca",
   packageCodes: {
     free: "TCACA_code_001_PqouKr6QWV",
@@ -65,6 +70,32 @@ const CODEBUDDY_CONFIG = {
     extra: "TCACA_code_009_0XmEQc2xOf",
   },
 };
+
+const CODEBUDDY_CN_CONFIG = {
+  label: "CodeBuddy CN",
+  usageUrl: "https://www.codebuddy.cn/billing/meter/get-user-resource",
+  baseUrl: "https://www.codebuddy.cn",
+  domain: "www.codebuddy.cn",
+  accountDomain: "copilot.tencent.com",
+  useConnectionDomainForUsage: false,
+  productCode: "p_tcaca",
+  packageCodes: {
+    proMon: "TCACA_code_002_AkiJS3ZHF5",
+    activity: "TCACA_code_007_nzdH5h4Nl0",
+    freeMon: "TCACA_code_008_cfWoLwvjU4",
+    extra: "TCACA_code_009_0XmEQc2xOf",
+    proYear: "TCACA_code_023_4xbGhMrE6q",
+  },
+  packageRequests: [
+    { keys: ["proMon", "proYear", "extra"] },
+    { keys: ["freeMon"], dateMode: "daySlice" },
+    { keys: ["activity"] },
+  ],
+};
+
+function getCodeBuddyConfig(provider = "codebuddy") {
+  return provider === "codebuddy-cn" ? CODEBUDDY_CN_CONFIG : CODEBUDDY_CONFIG;
+}
 
 /**
  * Get usage data for a provider connection
@@ -92,7 +123,9 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
     case "kiro":
       return await getKiroUsage(accessToken, providerSpecificData, proxyOptions);
     case "codebuddy":
-      return await getCodeBuddyUsage(accessToken, providerSpecificData, proxyOptions, apiKey);
+      return await getCodeBuddyUsage(accessToken, providerSpecificData, proxyOptions, apiKey, "codebuddy");
+    case "codebuddy-cn":
+      return await getCodeBuddyUsage(accessToken, providerSpecificData, proxyOptions, apiKey, "codebuddy-cn");
     case "qoder":
       return await getQoderUsage(accessToken, proxyOptions);
     case "qwen":
@@ -112,11 +145,15 @@ export async function getUsageForProvider(connection, proxyOptions = null) {
   }
 }
 
-async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOptions = null) {
+async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOptions = null, config = CODEBUDDY_CONFIG) {
   const cachedUid = providerSpecificData?.uid || providerSpecificData?.rawAuth?.uid;
   if (cachedUid) return { uid: cachedUid, enterpriseId: providerSpecificData?.enterpriseId || null };
 
-  const domain = providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain || "www.codebuddy.ai";
+  const domain = providerSpecificData?.accountDomain
+    || providerSpecificData?.domain
+    || providerSpecificData?.rawAuth?.domain
+    || config.accountDomain
+    || config.domain;
   try {
     const response = await proxyAwareFetch(`https://${domain}/v2/plugin/accounts`, {
       method: "GET",
@@ -141,66 +178,73 @@ async function fetchCodeBuddyUid(accessToken, providerSpecificData = {}, proxyOp
   }
 }
 
-async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null, apiKey = null) {
+async function getCodeBuddyUsage(accessToken, providerSpecificData = {}, proxyOptions = null, apiKey = null, provider = "codebuddy") {
+  const config = getCodeBuddyConfig(provider);
+
   if (!accessToken) {
     if (apiKey) {
       return {
-        plan: "CodeBuddy",
-        message: "CodeBuddy chat key active. Upstream quota is unavailable without a valid IDE OAuth token; use 9router Usage for local request and token tracking.",
+        plan: config.label,
+        message: `${config.label} chat key active. Upstream quota is unavailable without a valid IDE OAuth token; use 9router Usage for local request and token tracking.`,
         quotas: {},
         authMode: "generated-api-key",
         trackingMode: "local-router",
       };
     }
     return {
-      plan: "CodeBuddy",
-      message: "CodeBuddy upstream quota is unavailable because no valid IDE OAuth token is stored.",
+      plan: config.label,
+      message: `${config.label} upstream quota is unavailable because no valid IDE OAuth token is stored.`,
       quotas: {},
       trackingMode: "unavailable",
     };
   }
 
   try {
-    const { uid, enterpriseId } = await fetchCodeBuddyUid(accessToken, providerSpecificData, proxyOptions);
+    const { uid, enterpriseId } = await fetchCodeBuddyUid(accessToken, providerSpecificData, proxyOptions, config);
+    const payloads = [];
 
-    const response = await proxyAwareFetch(CODEBUDDY_CONFIG.usageUrl, {
-      method: "POST",
-      headers: buildCodeBuddyUsageHeaders(accessToken, providerSpecificData, uid, enterpriseId),
-      body: JSON.stringify(buildCodeBuddyUsageBody()),
-    }, proxyOptions);
+    for (const body of buildCodeBuddyUsageBodies(config)) {
+      const response = await proxyAwareFetch(config.usageUrl, {
+        method: "POST",
+        headers: buildCodeBuddyUsageHeaders(accessToken, providerSpecificData, uid, enterpriseId, config),
+        body: JSON.stringify(body),
+      }, proxyOptions);
 
-    const rawText = await response.text();
-    let payload = null;
-    try {
-      payload = rawText ? JSON.parse(rawText) : null;
-    } catch {
-      payload = null;
-    }
+      const rawText = await response.text();
+      let payload = null;
+      try {
+        payload = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        payload = null;
+      }
 
-    if (response.status === 401 || response.status === 403) {
-      return {
-        plan: "CodeBuddy",
-        message: `CodeBuddy IDE OAuth token was rejected (${response.status}). Upstream quota is unavailable; use 9router Usage for local request and token tracking.`,
-        quotas: {},
-        authMode: "oauth-rejected",
-        trackingMode: "local-router",
-      };
-    }
+      if (response.status === 401 || response.status === 403) {
+        return {
+          plan: config.label,
+          message: `${config.label} IDE OAuth token was rejected (${response.status}). Upstream quota is unavailable; use 9router Usage for local request and token tracking.`,
+          quotas: {},
+          authMode: "oauth-rejected",
+          trackingMode: "local-router",
+        };
+      }
 
-    if (!response.ok) {
-      return {
-        plan: "CodeBuddy",
-        message: `CodeBuddy quota endpoint returned ${response.status}.`,
-        quotas: {},
-      };
+      if (!response.ok) {
+        return {
+          plan: config.label,
+          message: `${config.label} quota endpoint returned ${response.status}.`,
+          quotas: {},
+        };
+      }
+
+      payloads.push(payload);
     }
 
     return {
-      ...parseCodeBuddyUsage(payload),
+      ...parseCodeBuddyUsage(payloads, config),
       authMode: "oauth",
     };
   } catch (error) {
-    return { plan: "CodeBuddy", message: `CodeBuddy connected. Unable to fetch quota: ${error.message}`, quotas: {} };
+    return { plan: config.label, message: `${config.label} connected. Unable to fetch quota: ${error.message}`, quotas: {} };
   }
 }
 
@@ -243,23 +287,57 @@ function formatCodeBuddyDate(date) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function buildCodeBuddyUsageBody() {
+function buildCodeBuddyUsageBody(config = CODEBUDDY_CONFIG, options = {}) {
   const now = new Date();
   const rangeEnd = new Date(now);
   rangeEnd.setFullYear(rangeEnd.getFullYear() + 101);
 
-  return {
+  const body = {
     PageNumber: 1,
     PageSize: 200,
-    ProductCode: CODEBUDDY_CONFIG.productCode,
+    ProductCode: config.productCode,
     Status: [0, 3],
-    PackageEndTimeRangeBegin: formatCodeBuddyDate(now),
-    PackageEndTimeRangeEnd: formatCodeBuddyDate(rangeEnd),
   };
+
+  if (options.dateMode === "daySlice") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+    body.SlicePeriodStartTime = formatCodeBuddyDate(start);
+    body.SlicePeriodEndTime = formatCodeBuddyDate(end);
+  } else {
+    body.PackageEndTimeRangeBegin = formatCodeBuddyDate(now);
+    body.PackageEndTimeRangeEnd = formatCodeBuddyDate(rangeEnd);
+  }
+
+  if (Array.isArray(options.packageCodes) && options.packageCodes.length > 0) {
+    body.PackageCodes = options.packageCodes;
+  }
+
+  return body;
 }
 
-function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}, uid = null, enterpriseId = null) {
-  const domain = providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain || "www.codebuddy.ai";
+function buildCodeBuddyUsageBodies(config = CODEBUDDY_CONFIG) {
+  if (!Array.isArray(config.packageRequests) || config.packageRequests.length === 0) {
+    return [buildCodeBuddyUsageBody(config)];
+  }
+
+  return config.packageRequests
+    .map((request) => ({
+      ...request,
+      packageCodes: (request.keys || [])
+        .map((key) => config.packageCodes?.[key])
+        .filter(Boolean),
+    }))
+    .filter((request) => request.packageCodes.length > 0)
+    .map((request) => buildCodeBuddyUsageBody(config, request));
+}
+
+function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}, uid = null, enterpriseId = null, config = CODEBUDDY_CONFIG) {
+  const domain = providerSpecificData?.usageDomain
+    || (config.useConnectionDomainForUsage ? (providerSpecificData?.domain || providerSpecificData?.rawAuth?.domain) : null)
+    || config.domain;
 
   const headers = {
     Authorization: `Bearer ${accessToken}`,
@@ -267,6 +345,8 @@ function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}, uid 
     "Accept-Language": "zh-CN,zh;q=0.9",
     "Content-Type": "application/json",
     "X-Domain": domain,
+    Origin: config.baseUrl,
+    Referer: `${config.baseUrl}/profile/usage`,
   };
 
   if (uid) {
@@ -280,18 +360,21 @@ function buildCodeBuddyUsageHeaders(accessToken, providerSpecificData = {}, uid 
   return headers;
 }
 
-function parseCodeBuddyUsage(payload) {
-  const data = payload?.data?.Response?.Data || payload?.Response?.Data || payload?.data || payload || {};
-  const accounts = Array.isArray(data?.Accounts)
-    ? data.Accounts
-    : Array.isArray(data?.accounts)
-      ? data.accounts
-      : [];
+function parseCodeBuddyUsage(payload, config = CODEBUDDY_CONFIG) {
+  const payloads = Array.isArray(payload) ? payload : [payload];
+  const accounts = payloads.flatMap((entry) => {
+    const data = entry?.data?.Response?.Data || entry?.Response?.Data || entry?.data || entry || {};
+    return Array.isArray(data?.Accounts)
+      ? data.Accounts
+      : Array.isArray(data?.accounts)
+        ? data.accounts
+        : [];
+  });
 
   if (accounts.length === 0) {
     return {
-      plan: "CodeBuddy",
-      message: "CodeBuddy connected. No quota records were returned.",
+      plan: config.label,
+      message: `${config.label} connected. No quota records were returned.`,
       quotas: {},
     };
   }
@@ -301,10 +384,10 @@ function parseCodeBuddyUsage(payload) {
 
   for (const account of accounts) {
     if (!account || typeof account !== "object") continue;
-    const label = getCodeBuddyQuotaLabel(account.PackageCode);
+    const label = getCodeBuddyQuotaLabel(account.PackageCode, config);
     if (!label) continue;
 
-    if (account.PackageCode === CODEBUDDY_CONFIG.packageCodes.proMon || account.PackageCode === CODEBUDDY_CONFIG.packageCodes.proYear) {
+    if (account.PackageCode === config.packageCodes.proMon || account.PackageCode === config.packageCodes.proYear) {
       hasProPackage = true;
     }
 
@@ -331,7 +414,7 @@ function parseCodeBuddyUsage(payload) {
   if (Object.keys(quotas).length === 0) {
     return {
       plan: hasProPackage ? "Pro" : "Free",
-      message: "CodeBuddy connected. Unable to extract quota values.",
+      message: `${config.label} connected. Unable to extract quota values.`,
       quotas: {},
     };
   }
@@ -348,8 +431,10 @@ function parseCodeBuddyUsage(payload) {
   };
 }
 
-function getCodeBuddyQuotaLabel(packageCode) {
-  const codes = CODEBUDDY_CONFIG.packageCodes;
+function getCodeBuddyQuotaLabel(packageCode, config = CODEBUDDY_CONFIG) {
+  if (!packageCode) return null;
+
+  const codes = config.packageCodes;
   switch (packageCode) {
     case codes.free:
     case codes.freeMon:

@@ -114,4 +114,72 @@ describe("CodeBuddy usage", () => {
     expect(usage.trackingMode).toBe("local-router");
     expect(usage.quotas).toEqual({});
   });
+
+  it("fetches CodeBuddy CN quota with OAuth token only and no cookies", async () => {
+    proxyAwareFetch
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        msg: "OK",
+        data: { Response: { Data: { TotalCount: 0, Accounts: [] } } },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        msg: "OK",
+        data: {
+          Response: {
+            Data: {
+              TotalCount: 1,
+              Accounts: [{
+                PackageCode: "TCACA_code_008_cfWoLwvjU4",
+                CapacitySize: 500,
+                CapacityRemain: 450,
+                CapacityUsed: 50,
+              }],
+            },
+          },
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        code: 0,
+        msg: "OK",
+        data: {
+          Response: {
+            Data: {
+              TotalCount: 1,
+              Accounts: [{
+                PackageCode: "TCACA_code_007_nzdH5h4Nl0",
+                CapacitySize: 2000,
+                CapacityRemain: 1800,
+                CapacityUsed: 200,
+              }],
+            },
+          },
+        },
+      }));
+
+    const usage = await getUsageForProvider({
+      provider: "codebuddy-cn",
+      accessToken: "cn-access-token",
+      providerSpecificData: {
+        domain: "copilot.tencent.com",
+        uid: "uid-cn",
+        enterpriseId: "enterprise-cn",
+      },
+    });
+
+    expect(proxyAwareFetch).toHaveBeenCalledTimes(3);
+    expect(proxyAwareFetch.mock.calls[0][0]).toBe("https://www.codebuddy.cn/billing/meter/get-user-resource");
+    for (const [, options] of proxyAwareFetch.mock.calls) {
+      expect(options.headers.Authorization).toBe("Bearer cn-access-token");
+      expect(options.headers.Cookie).toBeUndefined();
+      expect(options.headers.cookie).toBeUndefined();
+      expect(options.headers["X-Domain"]).toBe("www.codebuddy.cn");
+      expect(options.headers.Origin).toBe("https://www.codebuddy.cn");
+      expect(options.headers.Referer).toBe("https://www.codebuddy.cn/profile/usage");
+    }
+    expect(JSON.parse(proxyAwareFetch.mock.calls[1][1].body).PackageCodes).toEqual(["TCACA_code_008_cfWoLwvjU4"]);
+    expect(usage.authMode).toBe("oauth");
+    expect(usage.quotas["Monthly Credits"]).toMatchObject({ used: 50, total: 500, remaining: 450 });
+    expect(usage.quotas["Activity Credits"]).toMatchObject({ used: 200, total: 2000, remaining: 1800 });
+  });
 });
