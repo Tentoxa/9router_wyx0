@@ -179,5 +179,5 @@ export const CODEBUDDY_SSE_HEADERS = {
  * @returns {boolean}
  */
 export function needsHeartbeat(provider) {
-  return provider === "codebuddy";
+  return provider === "codebuddy" || provider === "codebuddy-cn";
 }
