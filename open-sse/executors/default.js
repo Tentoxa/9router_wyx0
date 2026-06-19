@@ -133,6 +133,10 @@ function buildCodeBuddyBody(model, transformed, maxTokens, maxCompletionTokens) 
   return body;
 }
 
+function usesCodeBuddyRequestFiltering(provider) {
+  return provider === "codebuddy" || provider === "codebuddy-cn";
+}
+
 export class DefaultExecutor extends BaseExecutor {
   constructor(provider) {
     super(provider, PROVIDERS[provider] || PROVIDERS.openai);
@@ -140,7 +144,7 @@ export class DefaultExecutor extends BaseExecutor {
 
   transformRequest(model, body) {
     const transformed = this.applyJsonSchemaFallback(body);
-    if (this.provider === "codebuddy") {
+    if (usesCodeBuddyRequestFiltering(this.provider)) {
       const maxTokens = Number(transformed.max_tokens);
       const maxCompletionTokens = Number(transformed.max_completion_tokens);
       return buildCodeBuddyBody(model, transformed, maxTokens, maxCompletionTokens);
