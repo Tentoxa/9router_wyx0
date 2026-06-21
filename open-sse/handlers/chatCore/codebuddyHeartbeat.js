@@ -84,13 +84,17 @@ export class LivenessWatchdog {
 
   tick() {
     try {
-      if (!this.deps.isActive()) return;
+      if (!this.deps.isActive()) {
+        this.stop();
+        return;
+      }
 
       const idle = Date.now() - this.deps.getLastActivityAt();
       if (idle > this.stuckMs) {
+        this.stop();
         this.deps.logger.warn(
           `[${this.deps.label}] liveness stuck for ${idle}ms ` +
-          `(likely macOS sleep/App Nap), triggering recovery`
+          `(no upstream activity), triggering recovery`
         );
         try {
           this.deps.onStuck(idle);
@@ -117,26 +121,48 @@ export class LivenessWatchdog {
  * SSE comments (lines starting with ":") are ignored by SSE parsers but keep
  * the TCP connection alive through proxies and load balancers.
  */
-export function createHeartbeatInjector() {
+export function createHeartbeatInjector(options = {}) {
+  const {
+    signal = null,
+    isActive = null,
+    intervalMs = HEARTBEAT_INTERVAL_MS
+  } = options;
+
   let heartbeatTimer = null;
   let lastHeartbeatAt = 0;
   let heartbeatCount = 0;
   let isStreamClosed = false;
+  let removeAbortListener = null;
 
   const cleanup = () => {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
+    if (removeAbortListener) {
+      removeAbortListener();
+      removeAbortListener = null;
+    }
     isStreamClosed = true;
   };
 
   return new TransformStream({
     start(controller) {
+      if (signal?.aborted || isActive?.() === false) {
+        cleanup();
+        return;
+      }
+
+      if (signal) {
+        const onAbort = () => cleanup();
+        signal.addEventListener("abort", onAbort, { once: true });
+        removeAbortListener = () => signal.removeEventListener("abort", onAbort);
+      }
+
       // Start heartbeat timer immediately
       heartbeatTimer = setInterval(() => {
         // Guard: don't write to closed stream
-        if (isStreamClosed) {
+        if (isStreamClosed || signal?.aborted || isActive?.() === false) {
           cleanup();
           return;
         }
@@ -168,7 +194,8 @@ export function createHeartbeatInjector() {
             cleanup();
           }
         }
-      }, HEARTBEAT_INTERVAL_MS);
+      }, intervalMs);
+      heartbeatTimer.unref?.();
     },
 
     transform(chunk, controller) {

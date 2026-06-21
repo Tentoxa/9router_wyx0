@@ -67,8 +67,16 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
   let upstreamMonitor = null;
   let watchdog = null;
   let trackingStream = null;
+  let monitoredStreamController = streamController;
 
   if (needsHeartbeat(provider)) {
+    const stopWatchdog = () => {
+      if (watchdog) {
+        watchdog.stop();
+        watchdog = null;
+      }
+    };
+
     // Create upstream monitor to track activity (heartbeats, content, thinking)
     upstreamMonitor = createUpstreamMonitor(provider, model, `${provider}-${connectionId}`);
 
@@ -83,7 +91,7 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
     // Create LivenessWatchdog that monitors upstreamMonitor
     watchdog = new LivenessWatchdog({
       label: `${provider}-${connectionId}`,
-      isActive: () => !streamController.signal.aborted,
+      isActive: () => streamController.isConnected(),
       getLastActivityAt: () => upstreamMonitor.getLastActivityAt(),
       logger: console,
       onStuck: (idleMs) => {
@@ -98,13 +106,34 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
       }
     });
 
-    // Start watchdog (checks every 30s, triggers at 90s)
+    // Start watchdog (checks every 30s, triggers at 90s, stops when stream completes)
     watchdog.start();
 
-    // Cleanup on stream end
+    // Cleanup on abort paths.
     streamController.signal.addEventListener('abort', () => {
-      if (watchdog) watchdog.stop();
-    });
+      stopWatchdog();
+    }, { once: true });
+
+    // Cleanup on normal completion/error/disconnect paths.
+    monitoredStreamController = {
+      ...streamController,
+      handleComplete: () => {
+        stopWatchdog();
+        streamController.handleComplete();
+      },
+      handleError: (error) => {
+        stopWatchdog();
+        streamController.handleError(error);
+      },
+      handleDisconnect: (reason) => {
+        stopWatchdog();
+        streamController.handleDisconnect(reason);
+      },
+      abort: () => {
+        stopWatchdog();
+        streamController.abort();
+      }
+    };
   }
 
   // Build pipeline: providerResponse → trackingStream → transformStream → heartbeatInjector
@@ -113,15 +142,18 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
     // CodeBuddy: Add tracking stream before transform
     const trackedResponse = providerResponse.body.pipeThrough(trackingStream);
     const trackedProviderResponse = new Response(trackedResponse, providerResponse);
-    transformedBody = pipeWithDisconnect(trackedProviderResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+    transformedBody = pipeWithDisconnect(trackedProviderResponse, transformStream, monitoredStreamController, onAbortTerminal, stallTimeout);
   } else {
     // Other providers: Standard pipeline
-    transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeout);
+    transformedBody = pipeWithDisconnect(providerResponse, transformStream, monitoredStreamController, onAbortTerminal, stallTimeout);
   }
 
   // Inject heartbeat for providers with extended reasoning (CodeBuddy)
   if (needsHeartbeat(provider)) {
-    const heartbeatInjector = createHeartbeatInjector();
+    const heartbeatInjector = createHeartbeatInjector({
+      signal: streamController.signal,
+      isActive: () => streamController.isConnected()
+    });
     transformedBody = transformedBody.pipeThrough(heartbeatInjector);
   }
 
