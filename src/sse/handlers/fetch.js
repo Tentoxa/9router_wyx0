@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings, getCombos } from "@/lib/localDb";
+import { redactObject } from "open-sse/services/contentRedaction.js";
 import { AI_PROVIDERS, resolveProviderId } from "@/shared/constants/providers.js";
 import { handleFetchCore } from "open-sse/handlers/fetch/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -137,7 +138,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
       log
     });
     if (result.success) {
-      return new Response(JSON.stringify(result.data), {
+      return new Response(JSON.stringify(redactObject(result.data, "responses")), {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
     }
@@ -193,7 +194,7 @@ async function handleSingleProviderFetch(body, providerInput, request, apiKey, s
     });
 
     if (result.success) {
-      return new Response(JSON.stringify(result.data), {
+      return new Response(JSON.stringify(redactObject(result.data, "responses")), {
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
       });
     }

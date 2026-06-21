@@ -5,6 +5,7 @@ import PropTypes from "prop-types";
 import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { getCurrentLocale, onLocaleChange } from "@/i18n/runtime";
+import ContentRedactionCard from "./ContentRedactionCard.jsx";
 
 // Locales that unlock wenyan (classical Chinese) caveman levels
 const WENYAN_LOCALES = ["zh-CN", "zh-TW"];
@@ -1132,6 +1133,9 @@ export default function APIPageClient({ machineId }) {
           </div>
         </div>
       </Card>
+
+      {/* Content Redaction */}
+      <ContentRedactionCard />
 
       {/* API Keys */}
       <Card id="require-api-key">

@@ -1,4 +1,5 @@
 import { ERROR_TYPES, DEFAULT_ERROR_MESSAGES } from "../config/errorConfig.js";
+import { redactText } from "../services/contentRedaction.js";
 
 /**
  * Build OpenAI-compatible error response body
@@ -14,7 +15,7 @@ export function buildErrorBody(statusCode, message) {
 
   return {
     error: {
-      message: message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred",
+      message: redactText(message || DEFAULT_ERROR_MESSAGES[statusCode] || "An error occurred", "errors"),
       type: errorInfo.type,
       code: errorInfo.code
     }
@@ -115,7 +116,8 @@ export function createErrorResult(statusCode, message, resetsAtMs) {
  */
 export function unavailableResponse(statusCode, message, retryAfter, retryAfterHuman) {
   const retryAfterSec = Math.max(Math.ceil((new Date(retryAfter).getTime() - Date.now()) / 1000), 1);
-  const msg = `${message} (${retryAfterHuman})`;
+  const redactedMsg = redactText(message, "errors");
+  const msg = `${redactedMsg} (${retryAfterHuman})`;
   return new Response(
     JSON.stringify({ error: { message: msg } }),
     {

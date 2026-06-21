@@ -1,6 +1,7 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { redactObject, redactText } from "../services/contentRedaction.js";
 import {
   generateCursorBody,
   parseConnectRPCFrame,
@@ -108,7 +109,7 @@ function createErrorResponse(jsonError) {
   
   return new Response(JSON.stringify({
     error: {
-      message: errorMsg,
+      message: redactText(errorMsg, "errors"),
       type: isRateLimit ? "rate_limit_error" : "api_error",
       code: jsonError?.error?.details?.[0]?.debug?.error || "unknown"
     }
@@ -240,7 +241,7 @@ export class CursorExecutor extends BaseExecutor {
         const errorText = response.body?.toString() || "Unknown error";
         const errorResponse = new Response(JSON.stringify({
           error: {
-            message: `[${response.status}]: ${errorText}`,
+            message: redactText(`[${response.status}]: ${errorText}`, "errors"),
             type: "invalid_request_error",
             code: ""
           }
@@ -259,7 +260,7 @@ export class CursorExecutor extends BaseExecutor {
     } catch (error) {
       const errorResponse = new Response(JSON.stringify({
         error: {
-          message: error.message,
+          message: redactText(error.message, "errors"),
           type: "connection_error",
           code: ""
         }
@@ -346,7 +347,7 @@ export class CursorExecutor extends BaseExecutor {
         return new Response(
           JSON.stringify({
             error: {
-              message: result.error,
+              message: redactText(result.error, "errors"),
               type: "rate_limit_error",
               code: "rate_limited"
             }
@@ -442,7 +443,7 @@ export class CursorExecutor extends BaseExecutor {
       usage
     };
 
-    return new Response(JSON.stringify(completion), {
+    return new Response(JSON.stringify(redactObject(completion, "responses")), {
       status: 200,
       headers: { "Content-Type": "application/json" }
     });
@@ -526,7 +527,7 @@ export class CursorExecutor extends BaseExecutor {
         return new Response(
           JSON.stringify({
             error: {
-              message: result.error,
+              message: redactText(result.error, "errors"),
               type: "rate_limit_error",
               code: "rate_limited"
             }

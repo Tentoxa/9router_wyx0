@@ -10,6 +10,7 @@
 import { buildSearchRequest } from "./callers.js";
 import { normalizeSearchResponse } from "./normalizers.js";
 import { handleChatSearch } from "./chatSearch.js";
+import { redactObject } from "../../services/contentRedaction.js";
 
 const GLOBAL_TIMEOUT_MS = 15000;
 const NON_RETRIABLE = new Set([400, 401, 403, 404]);
@@ -36,7 +37,7 @@ function sanitizeHeaders(headers) {
 
 /** Build a JSON Response wrapper used by the auth layer. */
 function jsonResponse(payload, status = 200) {
-  return new Response(JSON.stringify(payload), {
+  return new Response(JSON.stringify(redactObject(payload, "responses")), {
     status,
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
   });

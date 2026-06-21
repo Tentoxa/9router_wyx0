@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { redactObject } from "../services/contentRedaction.js";
 import { getTtsAdapter, synthesizeViaConfig } from "./ttsProviders/index.js";
 
 // Re-export voice fetchers + voices APIs for backward compat with existing routes
@@ -19,7 +20,7 @@ function createTtsResponse(base64Audio, format, responseFormat) {
   if (responseFormat === "json") {
     return {
       success: true,
-      response: new Response(JSON.stringify({ audio: base64Audio, format }), {
+      response: new Response(JSON.stringify(redactObject({ audio: base64Audio, format }, "responses")), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createErrorResult } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { redactObject, redactText } from "../services/contentRedaction.js";
 import { AI_PROVIDERS } from "../../src/shared/constants/providers.js";
 
 // Build auth headers from sttConfig + token
@@ -150,13 +151,15 @@ async function transcribeOpenAICompatible(cfg, file, model, token, formData) {
   if (!res.ok) return upstreamError(res);
   const ct = res.headers.get("content-type") || "application/json";
   const txt = await res.text();
-  return { success: true, response: new Response(txt, { status: 200, headers: { "Content-Type": ct, "Access-Control-Allow-Origin": "*" } }) };
+  // Redact text content in STT response (JSON or plain text)
+  const redacted = ct.includes("application/json") ? redactText(txt, "responses") : redactText(txt, "responses");
+  return { success: true, response: new Response(redacted, { status: 200, headers: { "Content-Type": ct, "Access-Control-Allow-Origin": "*" } }) };
 }
 
 function jsonResponse(obj) {
   return {
     success: true,
-    response: new Response(JSON.stringify(obj), {
+    response: new Response(JSON.stringify(redactObject(obj, "responses")), {
       status: 200,
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
     }),

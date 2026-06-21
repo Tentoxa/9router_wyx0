@@ -1,5 +1,6 @@
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { redactText } from "../services/contentRedaction.js";
 
 const GROK_CHAT_API = PROVIDERS["grok-web"].baseUrl;
 const GROK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
@@ -198,7 +199,7 @@ async function buildNonStreamingResponse(eventStream, model, cid, created, isThi
     if (chunk.fingerprint) fingerprint = chunk.fingerprint;
     if (chunk.error) {
       return new Response(JSON.stringify({
-        error: { message: chunk.error, type: "upstream_error", code: "GROK_ERROR" },
+        error: { message: redactText(chunk.error, "errors"), type: "upstream_error", code: "GROK_ERROR" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
     }
     if (chunk.thinking) { thinkingParts.push(chunk.thinking); continue; }
@@ -229,7 +230,7 @@ export class GrokWebExecutor extends BaseExecutor {
     const messages = body?.messages;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       const errResp = new Response(JSON.stringify({
-        error: { message: "Missing or empty messages array", type: "invalid_request" },
+        error: { message: redactText("Missing or empty messages array", "errors"), type: "invalid_request" },
       }), { status: 400, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers: {}, transformedBody: body };
     }
@@ -241,7 +242,7 @@ export class GrokWebExecutor extends BaseExecutor {
     const message = parseOpenAIMessages(messages);
     if (!message.trim()) {
       const errResp = new Response(JSON.stringify({
-        error: { message: "Empty query after processing", type: "invalid_request" },
+        error: { message: redactText("Empty query after processing", "errors"), type: "invalid_request" },
       }), { status: 400, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers: {}, transformedBody: body };
     }
@@ -301,7 +302,7 @@ export class GrokWebExecutor extends BaseExecutor {
     } catch (err) {
       log?.error?.("GROK-WEB", `Fetch failed: ${err.message || String(err)}`);
       const errResp = new Response(JSON.stringify({
-        error: { message: `Grok connection failed: ${err.message || String(err)}`, type: "upstream_error" },
+        error: { message: redactText(`Grok connection failed: ${err.message || String(err)}`, "errors"), type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
     }
@@ -313,14 +314,14 @@ export class GrokWebExecutor extends BaseExecutor {
       else if (status === 429) errMsg = "Grok rate limited. Wait a moment and retry, or rotate cookies.";
       log?.warn?.("GROK-WEB", errMsg);
       const errResp = new Response(JSON.stringify({
-        error: { message: errMsg, type: "upstream_error", code: `HTTP_${status}` },
+        error: { message: redactText(errMsg, "errors"), type: "upstream_error", code: `HTTP_${status}` },
       }), { status, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
     }
 
     if (!response.body) {
       const errResp = new Response(JSON.stringify({
-        error: { message: "Grok returned empty response body", type: "upstream_error" },
+        error: { message: redactText("Grok returned empty response body", "errors"), type: "upstream_error" },
       }), { status: 502, headers: { "Content-Type": "application/json" } });
       return { response: errResp, url: GROK_CHAT_API, headers, transformedBody: grokPayload };
     }

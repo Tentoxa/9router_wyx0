@@ -16,6 +16,7 @@ import { handleComboChat } from "open-sse/services/combo.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
+import { initRedactionFromDb } from "open-sse/services/contentRedaction.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
@@ -27,6 +28,9 @@ import { getCodexConnectionLabel, resolveCodexGatewayConnection } from "../servi
  * Format detection and translation handled by translator
  */
 export async function handleChat(request, clientRawRequest = null) {
+  // Initialize content redaction config from DB (once per server lifecycle)
+  initRedactionFromDb().catch((e) => console.warn("[ContentRedaction] init failed:", e.message));
+
   let body;
   try {
     body = await request.json();

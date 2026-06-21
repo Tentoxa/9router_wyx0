@@ -2,6 +2,7 @@ import { detectFormat } from "../services/provider.js";
 import { translateResponse, initState } from "../translator/index.js";
 import { FORMATS } from "../translator/formats.js";
 import { SKIP_PATTERNS } from "../config/runtimeConfig.js";
+import { redactObject, redactText, createRedactionTransformStream } from "../services/contentRedaction.js";
 import { formatSSE } from "./stream.js";
 
 /**
@@ -126,13 +127,14 @@ function createOpenAIResponse(model, text = DEFAULT_BYPASS_TEXT) {
  * Use translator to convert OpenAI → sourceFormat
  */
 function createNonStreamingResponse(sourceFormat, model, text) {
-  const openaiResponse = createOpenAIResponse(model, text);
+  const redactedText = redactText(text, "responses");
+  const openaiResponse = createOpenAIResponse(model, redactedText);
 
   // If sourceFormat is OpenAI, return directly
   if (sourceFormat === FORMATS.OPENAI) {
     return {
       success: true,
-      response: new Response(JSON.stringify(openaiResponse), {
+      response: new Response(JSON.stringify(redactObject(openaiResponse, "responses")), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*"
@@ -166,7 +168,7 @@ function createNonStreamingResponse(sourceFormat, model, text) {
 
   return {
     success: true,
-    response: new Response(JSON.stringify(finalResponse), {
+    response: new Response(JSON.stringify(redactObject(finalResponse, "responses")), {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*"
@@ -180,7 +182,8 @@ function createNonStreamingResponse(sourceFormat, model, text) {
  * Use translator to convert OpenAI chunks → sourceFormat
  */
 function createStreamingResponse(sourceFormat, model, text) {
-  const openaiResponse = createOpenAIResponse(model, text);
+  const redactedText = redactText(text, "responses");
+  const openaiResponse = createOpenAIResponse(model, redactedText);
   const state = initState(sourceFormat);
   state.model = model;
 

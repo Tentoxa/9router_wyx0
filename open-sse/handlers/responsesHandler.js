@@ -7,6 +7,7 @@ import { handleChatCore } from "./chatCore.js";
 import { convertResponsesApiFormat } from "../translator/helpers/responsesApiHelper.js";
 import { createResponsesApiTransformStream } from "../transformer/responsesTransformer.js";
 import { convertResponsesStreamToJson } from "../transformer/streamToJsonConverter.js";
+import { redactObject, createRedactionTransformStream } from "../services/contentRedaction.js";
 
 /**
  * Handle /v1/responses request
@@ -59,7 +60,7 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
 
       return {
         success: true,
-        response: new Response(JSON.stringify(jsonResponse), {
+        response: new Response(JSON.stringify(redactObject(jsonResponse, "responses")), {
           status: 200,
           headers: {
             "Content-Type": "application/json",
@@ -81,7 +82,13 @@ export async function handleResponsesCore({ body, modelInfo, credentials, log, o
   // Case 2: Client wants streaming, got SSE - transform it
   if (clientRequestedStreaming && contentType.includes("text/event-stream")) {
     const transformStream = createResponsesApiTransformStream(null);
-    const transformedBody = response.body.pipeThrough(transformStream);
+    let transformedBody = response.body.pipeThrough(transformStream);
+
+    // Apply content redaction as the final transform
+    const redactionStream = createRedactionTransformStream("responses");
+    if (redactionStream) {
+      transformedBody = transformedBody.pipeThrough(redactionStream);
+    }
 
     return {
       success: true,

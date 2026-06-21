@@ -2,6 +2,7 @@ import { createErrorResult, parseUpstreamError, formatProviderError } from "../u
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getExecutor } from "../executors/index.js";
+import { redactObject, createRedactionTransformStream } from "../services/contentRedaction.js";
 import { getImageAdapter } from "./imageProviders/index.js";
 import { urlToBase64 } from "./imageProviders/_base.js";
 
@@ -136,6 +137,11 @@ export async function handleImageGenerationCore({
       });
       // Codex streaming case: returns an SSE Response directly
       if (parsed?.sseResponse) {
+        // Apply content redaction to the SSE stream
+        const redactionStream = createRedactionTransformStream("responses");
+        if (redactionStream && parsed.sseResponse.body) {
+          return { success: true, response: new Response(parsed.sseResponse.body.pipeThrough(redactionStream), { headers: parsed.sseResponse.headers }) };
+        }
         return { success: true, response: parsed.sseResponse };
       }
     } else {
@@ -179,7 +185,7 @@ export async function handleImageGenerationCore({
 
   return {
     success: true,
-    response: new Response(JSON.stringify(finalBody), {
+    response: new Response(JSON.stringify(redactObject(finalBody, "responses")), {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",

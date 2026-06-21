@@ -1,5 +1,6 @@
 import { createErrorResult, parseUpstreamError, formatProviderError } from "../utils/error.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
+import { redactObject } from "../services/contentRedaction.js";
 import { getExecutor } from "../executors/index.js";
 import { refreshWithRetry } from "../services/tokenRefresh.js";
 import { getEmbeddingAdapter } from "./embeddingProviders/index.js";
@@ -116,7 +117,7 @@ export async function handleEmbeddingsCore({
 
   return {
     success: true,
-    response: new Response(JSON.stringify(normalized), {
+    response: new Response(JSON.stringify(redactObject(normalized, "responses")), {
       headers: {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",

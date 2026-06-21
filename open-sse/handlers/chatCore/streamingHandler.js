@@ -1,6 +1,7 @@
 import { FORMATS } from "../../translator/formats.js";
 import { needsTranslation } from "../../translator/index.js";
 import { createSSETransformStreamWithLogger, createPassthroughStreamWithLogger } from "../../utils/stream.js";
+import { createRedactionTransformStream } from "../../services/contentRedaction.js";
 import { pipeWithDisconnect } from "../../utils/streamHandler.js";
 import { buildAbortedResponsesTerminalBytes } from "../../utils/responsesStreamHelpers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats } from "./requestDetail.js";
@@ -155,6 +156,12 @@ export function handleStreamingResponse({ providerResponse, provider, model, sou
       isActive: () => streamController.isConnected()
     });
     transformedBody = transformedBody.pipeThrough(heartbeatInjector);
+  }
+
+  // Apply content redaction as the final transform before the response goes to the client
+  const redactionStream = createRedactionTransformStream("responses");
+  if (redactionStream) {
+    transformedBody = transformedBody.pipeThrough(redactionStream);
   }
 
   // Select headers: CodeBuddy gets enhanced headers for proxy compatibility

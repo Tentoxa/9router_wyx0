@@ -27,6 +27,7 @@ import { createHash } from "crypto";
 
 import { BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
+import { redactText } from "../services/contentRedaction.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import {
   QODER_CHAT_URL_ENCODED,
@@ -358,7 +359,7 @@ export class QoderExecutor extends BaseExecutor {
       // No user id → no way to sign. Surface a 401 so the dashboard nudges
       // the user back to OAuth.
       const fakeResp = new Response(
-        JSON.stringify({ error: { message: "qoder credential is missing userId; reconnect the account" } }),
+        JSON.stringify({ error: { message: redactText("qoder credential is missing userId; reconnect the account", "errors") } }),
         { status: 401, headers: { "Content-Type": "application/json" } },
       );
       return { response: fakeResp, url, headers: {}, transformedBody: body };
@@ -367,7 +368,7 @@ export class QoderExecutor extends BaseExecutor {
       // Same shape as the userId guard — clean 401 so chatCore reports
       // "reconnect" rather than bubbling cosy.js's synchronous throw as 500.
       const fakeResp = new Response(
-        JSON.stringify({ error: { message: "qoder credential is missing accessToken; reconnect the account" } }),
+        JSON.stringify({ error: { message: redactText("qoder credential is missing accessToken; reconnect the account", "errors") } }),
         { status: 401, headers: { "Content-Type": "application/json" } },
       );
       return { response: fakeResp, url, headers: {}, transformedBody: body };
@@ -407,7 +408,7 @@ export class QoderExecutor extends BaseExecutor {
       // cosy.js throws synchronously on missing userId/authToken — surface
       // as 401 so chatCore prompts re-auth instead of returning a 500.
       const fakeResp = new Response(
-        JSON.stringify({ error: { message: `qoder cosy signing failed: ${err.message}` } }),
+        JSON.stringify({ error: { message: redactText(`qoder cosy signing failed: ${err.message}`, "errors") } }),
         { status: 401, headers: { "Content-Type": "application/json" } },
       );
       return { response: fakeResp, url, headers: {}, transformedBody: body };
