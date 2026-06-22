@@ -36,6 +36,9 @@ COPY --from=builder /app/src/mitm ./src/mitm
 COPY --from=builder /app/node_modules/node-forge ./node_modules/node-forge
 # Ensure `next` is available at runtime in case tracing did not include it.
 COPY --from=builder /app/node_modules/next ./node_modules/next
+# FIX: Crash handler wrapper — adds uncaughtException/unhandledRejection handlers
+# with forensic dump capture BEFORE Next.js starts. Prevents zombie process bug.
+COPY --from=builder /app/scripts/crash-handler.js ./crash-handler.js
 
 RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
@@ -49,4 +52,4 @@ RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
 EXPOSE 20128
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["node", "server.js"]
+CMD ["node", "crash-handler.js"]

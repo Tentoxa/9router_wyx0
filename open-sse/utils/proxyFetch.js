@@ -18,22 +18,43 @@ async function getGlobalDispatcher() {
         timeout: 60000, // 60s connection timeout
         // TCP-level optimizations (matches CodeBuddy CLI)
         keepAlive: true,
-        keepAliveInitialDelay: 60000, // 60s TCP keepalive (OS-level)
+        keepAliveInitialDelay: 30000, // 30s TCP keepalive (OS-level) — probes before upstream idle kill
         noDelay: true, // Disable Nagle's algorithm for immediate data transmission
       },
       // Max concurrent connections per host
       connections: 128,
-      // CRITICAL: Enable keep-alive with 2s interval (matches official CodeBuddy CLI)
-      // This prevents connection overhead while avoiding stale connections
-      keepAliveTimeout: 2000, // 2 seconds (matches CodeBuddy CLI keepAliveMsecs)
-      keepAliveMaxTimeout: 60000, // 60 seconds initial delay (matches CodeBuddy CLI)
+      // CRITICAL FIX: keepAliveTimeout must be WELL BELOW the upstream's idle kill timeout.
+      // copilot.tencent.com kills idle connections at ~100-109s. If our keepAliveMaxTimeout
+      // is higher, the upstream RST arrives while the socket is still in our pool, causing
+      // an unhandled ECONNRESET that zombifies the process.
+      // 4s base timeout with 30s max — undici picks a random value in [keepAliveTimeout, keepAliveMaxTimeout]
+      // so worst case is 30s, well below the 100s upstream kill.
+      keepAliveTimeout: 4000, // 4 seconds (was 2s — slightly higher to avoid churning for active pools)
+      keepAliveMaxTimeout: 30000, // 30 seconds max (was 60s — MUST be below upstream's ~100s idle kill)
       // Disable pipelining for now (can be enabled later if needed)
       pipelining: 0,
       // FIX: Increase body and headers timeout for large requests (anthropic-compatible with 1.45MB bodies)
       bodyTimeout: 300000, // 5 minutes (was default 30s)
       headersTimeout: 300000, // 5 minutes (was default 30s)
     });
-    dbg("PROXY", `global dispatcher created with keep-alive ENABLED (2s interval, 60s max)`);
+
+    // FIX: Listen for errors on the Agent itself.
+    // When a pooled (idle) socket receives a TCP RST from the upstream, undici emits an
+    // 'error' event on the Agent. Without a listener, this becomes an uncaughtException.
+    // This is the ROOT CAUSE of the zombie process bug: idle socket RST → unhandled error → process hangs.
+    globalDispatcher.on("error", (err) => {
+      const code = err?.code || err?.cause?.code || "?";
+      const msg = err?.message || String(err);
+      // Idle socket resets are expected — log and swallow. The pool will recover on its own.
+      if (code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "EPIPE" || msg.includes("aborted")) {
+        dbg("PROXY", `idle socket error (expected, swallowed): code=${code} | msg=${msg}`);
+        return;
+      }
+      // Non-transient errors — log prominently but don't crash (the safety net in start-standalone handles that)
+      console.warn(`[ProxyFetch] Agent error: code=${code} | msg=${msg}`);
+    });
+
+    dbg("PROXY", `global dispatcher created with keep-alive ENABLED (4s base, 30s max)`);
   }
   return globalDispatcher;
 }
@@ -351,6 +372,19 @@ async function getDispatcher(proxyUrl) {
       uri: normalized,
       // Limit TLS session cache to prevent unbounded growth
       maxCachedSessions: MEMORY_CONFIG.tlsSessionMaxAge ? 10 : 100,
+      // FIX: Same keep-alive timeout fix as the global Agent — prevent idle socket RST
+      keepAliveTimeout: 4000,
+      keepAliveMaxTimeout: 30000,
+    });
+    // FIX: Swallow idle socket errors on proxy dispatchers too
+    dispatcher.on("error", (err) => {
+      const code = err?.code || err?.cause?.code || "?";
+      const msg = err?.message || String(err);
+      if (code === "ECONNRESET" || code === "UND_ERR_SOCKET" || code === "EPIPE" || msg.includes("aborted")) {
+        dbg("PROXY", `proxy idle socket error (expected, swallowed): code=${code} | msg=${msg}`);
+        return;
+      }
+      console.warn(`[ProxyFetch] ProxyAgent error: code=${code} | msg=${msg}`);
     });
     proxyDispatchers.set(normalized, dispatcher);
     dbg("PROXY", `dispatcher created | proxy=${normalized} | pool_size=${proxyDispatchers.size}`);

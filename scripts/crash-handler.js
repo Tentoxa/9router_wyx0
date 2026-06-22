@@ -1,38 +1,18 @@
-import { createRequire } from "node:module";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+/**
+ * Production server wrapper — adds crash handlers BEFORE Next.js starts.
+ *
+ * In Docker, this replaces `node server.js` as the CMD.
+ * It sets up forensic crash capture so that when the zombie bug strikes,
+ * we get the FULL stack trace + process state in a dump file.
+ *
+ * This file is copied to .next/standalone/ at build time and runs in the
+ * container as: node crash-handler.js
+ */
 
-const require = createRequire(import.meta.url);
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const standaloneRoot = path.join(projectRoot, ".next", "standalone");
+const { writeFileSync, mkdirSync, existsSync, appendFileSync } = require("node:fs");
+const path = require("node:path");
 
-function ensureLinkedDir(source, destination) {
-  if (!fs.existsSync(source) || fs.existsSync(destination)) return;
-
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-
-  try {
-    fs.symlinkSync(source, destination, process.platform === "win32" ? "junction" : "dir");
-  } catch {
-    fs.cpSync(source, destination, { recursive: true });
-  }
-}
-
-ensureLinkedDir(path.join(projectRoot, ".next", "static"), path.join(standaloneRoot, ".next", "static"));
-ensureLinkedDir(path.join(projectRoot, "public"), path.join(standaloneRoot, "public"));
-
-// ─── Forensic Crash Capture & Error Safety Net ───────────────────────────────
-// When the zombie bug strikes, we need THREE things to find the root cause:
-//   1. The FULL stack trace (Node truncates by default — "at ignore-listed frames")
-//   2. Process state at crash time (active handles, memory, uptime)
-//   3. A dump file on disk that survives the container restart
-//
-// Without these, we're guessing. With these, we know exactly what happened.
-
-import { writeFileSync, mkdirSync, existsSync, appendFileSync } from "node:fs";
-
-const CRASH_DIR = process.env.CRASH_DIR || "/tmp/wyxrouter-crashes";
+const CRASH_DIR = process.env.CRASH_DIR || "/app/data/crashes";
 const FATAL_ERROR_WINDOW_MS = 10_000;
 let fatalCount = 0;
 let firstFatalAt = 0;
@@ -40,21 +20,13 @@ let firstFatalAt = 0;
 function ensureCrashDir() {
   try {
     if (!existsSync(CRASH_DIR)) mkdirSync(CRASH_DIR, { recursive: true });
-  } catch {
-    // /tmp might not exist on Windows dev — fall back to project root
-    try {
-      const fallback = path.join(projectRoot, ".crashes");
-      if (!existsSync(fallback)) mkdirSync(fallback, { recursive: true });
-      return fallback;
-    } catch { /* give up silently */ }
+  } catch (e) {
+    console.error("[crash-handler] Failed to create crash dir:", e.message);
   }
-  return CRASH_DIR;
 }
 
-/**
- * Capture full stack trace without truncation.
- * Node.js default cuts at "ignore-listed frames" — we override that.
- */
+ensureCrashDir();
+
 function captureFullStack(err) {
   const lines = [];
   lines.push(`Error: ${err?.message || String(err)}`);
@@ -63,14 +35,12 @@ function captureFullStack(err) {
   lines.push(`  syscall: ${err?.syscall || "?"}`);
   lines.push(`  name: ${err?.name || "?"}`);
 
-  // Full stack — no truncation
   if (err?.stack) {
     lines.push("");
     lines.push("=== FULL STACK TRACE ===");
     lines.push(err.stack);
   }
 
-  // Chain of causes (ECONNRESET often wraps inside a cause)
   let depth = 0;
   let cause = err?.cause;
   while (cause && depth < 10) {
@@ -86,10 +56,6 @@ function captureFullStack(err) {
   return lines.join("\n");
 }
 
-/**
- * Capture process state at crash time — this tells us if the event loop
- * was stuck, how many handles were open, memory pressure, etc.
- */
 function captureProcessState() {
   const lines = [];
   lines.push("=== PROCESS STATE AT CRASH ===");
@@ -102,22 +68,18 @@ function captureProcessState() {
   const mem = process.memoryUsage();
   lines.push("");
   lines.push("=== MEMORY ===");
-  lines.push(`  rss:         ${(mem.rss / 1024 / 1024).toFixed(1)} MB (resident set)`);
-  lines.push(`  heapUsed:    ${(mem.heapUsed / 1024 / 1024).toFixed(1)} MB`);
-  lines.push(`  heapTotal:   ${(mem.heapTotal / 1024 / 1024).toFixed(1)} MB`);
-  lines.push(`  external:    ${(mem.external / 1024 / 1024).toFixed(1)} MB`);
-  lines.push(`  arrayBuffers:${(mem.arrayBuffers / 1024 / 1024).toFixed(1)} MB`);
+  lines.push(`  rss:          ${(mem.rss / 1024 / 1024).toFixed(1)} MB`);
+  lines.push(`  heapUsed:     ${(mem.heapUsed / 1024 / 1024).toFixed(1)} MB`);
+  lines.push(`  heapTotal:    ${(mem.heapTotal / 1024 / 1024).toFixed(1)} MB`);
+  lines.push(`  external:     ${(mem.external / 1024 / 1024).toFixed(1)} MB`);
+  lines.push(`  arrayBuffers: ${(mem.arrayBuffers / 1024 / 1024).toFixed(1)} MB`);
 
-  // Active handles — open sockets, timers, etc.
-  // This is the KEY diagnostic: if there are hundreds of active handles,
-  // it means connections are leaking and not being cleaned up.
   lines.push("");
   lines.push("=== ACTIVE HANDLES (sockets, timers, etc.) ===");
   try {
     const handles = process._getActiveHandles();
     lines.push(`  total: ${handles.length}`);
 
-    // Categorize handles by type
     const byType = {};
     for (const h of handles) {
       const ctor = h?.constructor?.name || "unknown";
@@ -127,14 +89,13 @@ function captureProcessState() {
       lines.push(`    ${type}: ${count}`);
     }
 
-    // List socket details (these are the idle pooled connections)
     const sockets = handles.filter(h => h?.constructor?.name === "Socket" || h?.constructor?.name === "TLSSocket");
     if (sockets.length > 0) {
       lines.push("");
       lines.push(`  === SOCKET DETAILS (${sockets.length} sockets) ===`);
-      for (let i = 0; i < Math.min(sockets.length, 30); i++) {
+      for (let i = 0; i < Math.min(sockets.length, 50); i++) {
         const s = sockets[i];
-        const info = {
+        lines.push(`    [${i}] ${JSON.stringify({
           destroyed: s.destroyed,
           readable: s.readable,
           writable: s.writable,
@@ -144,16 +105,14 @@ function captureProcessState() {
           bytesWritten: s.bytesWritten,
           bytesRead: s.bytesRead,
           timeout: s.timeout,
-        };
-        lines.push(`    [${i}] ${JSON.stringify(info)}`);
+        })}`);
       }
-      if (sockets.length > 30) lines.push(`    ... and ${sockets.length - 30} more`);
+      if (sockets.length > 50) lines.push(`    ... and ${sockets.length - 50} more`);
     }
   } catch (e) {
     lines.push(`  (failed to get active handles: ${e.message})`);
   }
 
-  // Active requests (pending fetch calls, etc.)
   lines.push("");
   lines.push("=== ACTIVE REQUESTS ===");
   try {
@@ -166,15 +125,10 @@ function captureProcessState() {
   return lines.join("\n");
 }
 
-/**
- * Write a crash dump file to disk so it survives container restart.
- * Returns the file path.
- */
 function writeCrashDump(source, err, isTransient) {
-  const dir = ensureCrashDir();
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const filename = `crash-${ts}-${process.pid}.log`;
-  const filepath = path.join(dir, filename);
+  const filepath = path.join(CRASH_DIR, filename);
 
   const sections = [
     `══════════════════════════════════════════════════════════════════════════════`,
@@ -198,15 +152,13 @@ function writeCrashDump(source, err, isTransient) {
     console.error(`[FATAL] Crash dump written to: ${filepath}`);
   } catch (e) {
     console.error(`[FATAL] Failed to write crash dump: ${e.message}`);
-    // At minimum, dump everything to stderr
     console.error(sections.join("\n"));
   }
 
-  // Also append to a rolling crash log for easy grep
   try {
-    const rollingLog = path.join(dir, "crash-history.log");
+    const rollingLog = path.join(CRASH_DIR, "crash-history.log");
     appendFileSync(rollingLog,
-      `[${ts}] source=${source} transient=${isTransient} count=${fatalCount} code=${err?.code || err?.cause?.code || "?"} msg=${err?.message || String(err).slice(0, 200)} file=${filename}\n`,
+      `[${ts}] source=${source} transient=${isTransient} count=${fatalCount} code=${err?.code || err?.cause?.code || "?"} msg=${(err?.message || String(err)).slice(0, 200)} file=${filename}\n`,
       "utf8"
     );
   } catch { /* best-effort */ }
@@ -232,7 +184,6 @@ function handleFatalError(source, err) {
     msg.includes("aborted") ||
     msg.includes("socket hang up");
 
-  // ALWAYS write a crash dump — even for swallowed errors — so we have the full stack
   const dumpPath = writeCrashDump(source, err, isIdleSocketReset && fatalCount < 3);
 
   console.error(`[FATAL:${source}] code=${code} | msg=${msg} | dump=${dumpPath}`);
@@ -246,9 +197,11 @@ function handleFatalError(source, err) {
   process.exit(1);
 }
 
-// CRITICAL: Set these BEFORE any other code runs to prevent stack truncation.
-// "ignore-listed frames" in the original log happened because Node hides internal frames.
+// Register handlers BEFORE requiring server.js
 process.on("uncaughtException", (err) => handleFatalError("uncaughtException", err));
 process.on("unhandledRejection", (err) => handleFatalError("unhandledRejection", err));
 
-require(path.join(standaloneRoot, "server.js"));
+console.log("[crash-handler] Forensic crash capture enabled. Dumps →", CRASH_DIR);
+
+// Now start the actual Next.js server
+require("./server.js");
