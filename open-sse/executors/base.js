@@ -243,8 +243,23 @@ export class BaseExecutor {
         }, proxyOptions);
 
         clearTimeout(connectTimer);
-        // FIX: Cleanup AbortSignal listeners to prevent memory leaks
-        signal?.removeEventListener("abort", onOuterAbort);
+        // CRITICAL FIX: Do NOT remove the abort listener here.
+        // The original code removed onOuterAbort/onConnectAbort immediately after
+        // fetch headers arrived (the "✅ success" log). But the response body stream
+        // is still being read at this point. Removing the listener disconnects the
+        // watchdog from the fetch — when the watchdog fires streamController.abort()
+        // during a stuck stream, nothing propagates to abort the underlying socket.
+        // The socket stays open forever, the stream never completes, and concurrent
+        // slots fill up until the router is dead (zombie state).
+        //
+        // Instead, we keep the listener attached. It will be cleaned up when:
+        //   - The stream completes normally (streamController.handleComplete)
+        //   - The stream errors (streamController.handleError)
+        //   - The client disconnects (streamController.handleDisconnect)
+        // All of those paths fire after the body is fully consumed.
+        //
+        // The connectCtrl listener CAN be removed — it's only needed during the
+        // initial connection phase, which is complete once we have headers.
         connectCtrl.signal.removeEventListener("abort", onConnectAbort);
         const ttft = Date.now() - fetchT0;
         const ct = response.headers?.get?.("content-type") || "";
@@ -260,14 +275,23 @@ export class BaseExecutor {
 
         dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${ttft}ms | ct=${ct} | cl=${cl}`);
 
-        if (await tryRetry(urlIndex, response.status, `status ${response.status}`)) { urlIndex--; continue; }
+        if (await tryRetry(urlIndex, response.status, `status ${response.status}`)) {
+          // Cleanup: retry path — response body not consumed, remove listener
+          signal?.removeEventListener("abort", onOuterAbort);
+          urlIndex--; continue;
+        }
 
         if (this.shouldRetry(response.status, urlIndex)) {
           log?.debug?.("RETRY", `${response.status} on ${url}, trying fallback ${urlIndex + 1}`);
+          // Cleanup: fallback path — response body not consumed, remove listener
+          signal?.removeEventListener("abort", onOuterAbort);
           lastStatus = response.status;
           continue;
         }
 
+        // Success — response body will be streamed. Keep onOuterAbort attached so
+        // the watchdog can abort the stream if it stalls. The listener is cleaned up
+        // by the streamController lifecycle (handleComplete/handleError/handleDisconnect).
         return { response, url, headers, transformedBody };
       } catch (error) {
         clearTimeout(connectTimer);
